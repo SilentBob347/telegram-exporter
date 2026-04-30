@@ -6,6 +6,7 @@ import tkinter as tk
 import customtkinter as ctk
 from typing import Optional
 
+from ..modal_utils import make_anchored_popup
 from ..theme import C, SPACING, font
 
 
@@ -78,18 +79,7 @@ class Tooltip:
         except tk.TclError:
             return
 
-        tip = ctk.CTkToplevel(self._widget)
-        try:
-            tip.wm_overrideredirect(True)
-        except tk.TclError:
-            pass
-        try:
-            tip.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        tip.geometry(f"+{x}+{y}")
-        tip.configure(fg_color=C["card"])
-
+        tip = make_anchored_popup(self._widget, x, y, fg_color=C["card"])
         ctk.CTkLabel(
             tip,
             text=self._text,

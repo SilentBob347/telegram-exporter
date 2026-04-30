@@ -8,14 +8,8 @@ import customtkinter as ctk
 from typing import Callable, Optional
 
 from .button import AppButton
-from ..theme import C, SPACING, pick
-
-try:
-    from tkcalendar import Calendar
-    _CALENDAR_OK = True
-except ImportError:
-    Calendar = None  # type: ignore[assignment]
-    _CALENDAR_OK = False
+from ..modal_utils import make_anchored_popup
+from ..theme import C, pick
 
 
 class DatePickerButton(AppButton):
@@ -25,13 +19,14 @@ class DatePickerButton(AppButton):
     в передаваемый StringVar.
 
     Текстовое поле даты остаётся независимым — пользователь может либо
-    набрать дату руками, либо выбрать кнопкой. После выбора дополнительно
+    набрать дату руками, либо выбрать кликом. После выбора дополнительно
     вызывается опциональный on_pick — для случаев, когда родитель
     биндится на FocusOut/Return текстового поля и не получает уведомление
     при программной установке переменной.
 
-    Если tkcalendar по какой-то причине не установлен, кнопка тихо
-    становится no-op — текстовый ввод по-прежнему работает.
+    tkcalendar импортируется лениво: его babel-зависимость на старте
+    приложения сканирует locale-данные (~50 ms), а календарь нужен
+    только при клике на кнопку.
     """
 
     def __init__(
@@ -54,17 +49,20 @@ class DatePickerButton(AppButton):
         self._target = target_var
         self._on_pick = on_pick
         self._popup: Optional[ctk.CTkToplevel] = None
-
-    # ---- Public ----
-
-    def is_available(self) -> bool:
-        return _CALENDAR_OK
+        # Если кнопку уничтожают, пока popup открыт, popup останется висеть
+        # отдельным окном.
+        self.bind("<Destroy>", lambda _e: self._close_popup(), add="+")
 
     # ---- Internal ----
 
     def _open_picker(self) -> None:
-        if not _CALENDAR_OK:
+        try:
+            from tkcalendar import Calendar
+        except ImportError:
+            # tkcalendar не установлен — кнопка тихо no-op, текстовый
+            # ввод остаётся доступным.
             return
+
         if self._popup is not None and self._popup.winfo_exists():
             try:
                 self._popup.lift()
@@ -81,20 +79,13 @@ class DatePickerButton(AppButton):
             except ValueError:
                 pass
 
-        popup = ctk.CTkToplevel(self)
-        try:
-            popup.wm_overrideredirect(True)
-            popup.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        popup.configure(fg_color=C["card"])
-
         try:
             x = self.winfo_rootx()
             y = self.winfo_rooty() + self.winfo_height() + 4
-            popup.geometry(f"+{x}+{y}")
         except tk.TclError:
-            pass
+            return
+
+        popup = make_anchored_popup(self, x, y, fg_color=C["card"])
 
         cal = Calendar(
             popup,
@@ -119,12 +110,12 @@ class DatePickerButton(AppButton):
         )
         cal.pack(padx=4, pady=(4, 0))
 
-        # Кнопка закрытия — на случай, когда хочется передумать. Рандомные
-        # клики «вне popup» иногда не порождают FocusOut на overrideredirect-
-        # окне, поэтому явная кнопка надёжнее.
+        # Кнопка закрытия — на overrideredirect-окне FocusOut срабатывает
+        # ненадёжно (особенно на Windows), поэтому явный путь к закрытию
+        # обязателен на случай «передумал».
         AppButton(
             popup, text="Закрыть", variant="ghost", size="sm",
-            command=lambda: self._close_popup(),
+            command=self._close_popup,
         ).pack(padx=4, pady=(2, 4), fill="x")
 
         cal.bind("<<CalendarSelected>>", lambda _e: self._commit(cal.get_date()))
@@ -136,10 +127,7 @@ class DatePickerButton(AppButton):
     def _commit(self, value: str) -> None:
         self._target.set(value)
         if self._on_pick is not None:
-            try:
-                self._on_pick()
-            except Exception:
-                pass
+            self._on_pick()
         self._close_popup()
 
     def _close_popup(self) -> None:
