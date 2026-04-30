@@ -96,6 +96,9 @@ class ExportProgressWidget(ctk.CTkFrame):
         self._count_lbl.configure(text="0" if total is None else f"0 / {total}")
         self._eta_lbl.configure(text="")
         self._status_lbl.configure(text="")
+        # finish() прячет кнопку отмены — восстанавливаем для нового запуска.
+        if not self._cancel_btn.winfo_ismapped():
+            self._cancel_btn.pack(side="right")
         self._cancel_btn.configure(state="normal")
         self.pack_or_show()
 
@@ -138,9 +141,18 @@ class ExportProgressWidget(ctk.CTkFrame):
             self._status_lbl.configure(text=text)
 
     def finish(self) -> None:
-        """Заполняет бар до 100% и скрывает кнопку отмены."""
+        """Заполняет бар до 100%, чистит метки и убирает кнопку отмены."""
         self._bar.set(1.0)
-        self._cancel_btn.configure(state="disabled")
+        # Прячем кнопку, чтобы пользователь не пытался отменить уже завершённый
+        # экспорт — disabled-вариант создавал ощущение «крестик не реагирует».
+        try:
+            self._cancel_btn.pack_forget()
+        except Exception:
+            pass
+        # Если до finish() в _count_lbl было «100%» от скачивания модели
+        # (set_download_progress) и не было ни одного export_progress —
+        # счётчик остаётся со старым текстом. Чистим явно.
+        self._count_lbl.configure(text="")
         self._eta_lbl.configure(text="")
         self._status_lbl.configure(text="")
 
