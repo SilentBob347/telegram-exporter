@@ -182,7 +182,6 @@ class ChatListView(ctk.CTkFrame):
             var_from=self._date_from_var,
             var_to=self._date_to_var,
             on_change=self._apply_custom_dates,
-            inline_hint=True,
             leading_pad=SPACING["xl"],
         )
 

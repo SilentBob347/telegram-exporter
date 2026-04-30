@@ -17,9 +17,10 @@ _DEFAULT_HINT = "Формат: YYYY-MM-DD, локальное время"
 class DateRangeRow(ctk.CTkFrame):
     """Связка двух полей дат: «От [..] 📅 До [..] 📅» + хинт о формате.
 
-    inline_hint=True кладёт хинт справа от полей (одна строка — для
-    компактных шапок). inline_hint=False — на новой строке под полями
-    (для модалок, где места больше и читаемость важнее).
+    Хинт всегда на отдельной строке под полями — раньше был вариант
+    inline-строки, но при узком окне он обрезался горизонтально и
+    пользователь не видел напоминания о формате. Стабильнее всегда
+    показывать ниже полей.
 
     on_change вызывается без аргументов на:
       - FocusOut/Return текстовых полей,
@@ -36,16 +37,12 @@ class DateRangeRow(ctk.CTkFrame):
         var_to: tk.StringVar,
         on_change: Optional[Callable[[], None]] = None,
         hint: str = _DEFAULT_HINT,
-        inline_hint: bool = True,
         leading_pad: int = 0,
     ) -> None:
         super().__init__(master, fg_color="transparent")
 
-        if inline_hint:
-            inputs = self
-        else:
-            inputs = ctk.CTkFrame(self, fg_color="transparent")
-            inputs.pack(fill="x")
+        inputs = ctk.CTkFrame(self, fg_color="transparent")
+        inputs.pack(fill="x")
 
         ctk.CTkLabel(
             inputs, text="От",
@@ -75,16 +72,10 @@ class DateRangeRow(ctk.CTkFrame):
             inputs, target_var=var_to, on_pick=on_change,
         ).pack(side="left", padx=(SPACING["xs"], 0))
 
-        if inline_hint:
-            ctk.CTkLabel(
-                inputs, text=hint,
-                text_color=C["text_dim"], font=font(11),
-            ).pack(side="left", padx=(SPACING["sm"], 0))
-        else:
-            ctk.CTkLabel(
-                self, text=hint,
-                text_color=C["text_dim"], font=font(11),
-            ).pack(anchor="w", pady=(SPACING["xs"], 0))
+        ctk.CTkLabel(
+            self, text=hint,
+            text_color=C["text_dim"], font=font(11),
+        ).pack(anchor="w", padx=(leading_pad, 0), pady=(SPACING["xs"], 0))
 
         if on_change is not None:
             for e in (e_from, e_to):

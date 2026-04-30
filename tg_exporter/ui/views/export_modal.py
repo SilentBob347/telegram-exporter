@@ -96,7 +96,6 @@ class ExportModal(ctk.CTkToplevel):
             scroll,
             var_from=self._date_from_var,
             var_to=self._date_to_var,
-            inline_hint=False,
             hint="Формат: YYYY-MM-DD, локальное время (например 2025-01-15)",
         )
 
