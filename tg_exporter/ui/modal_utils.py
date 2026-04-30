@@ -113,11 +113,16 @@ def setup_smooth_scroll(modal, scrollable_frame) -> None:
 
     def _scroll_fn(event):
         if sys.platform == "darwin":
-            # macOS: event.delta = ±1..±5; домножаем на 3 для комфортной скорости.
-            step = -3 if event.delta > 0 else 3
+            # macOS: event.delta = ±1..±5 (мелкие тики). Масштабируем по delta,
+            # а не по знаку — иначе быстрый прокрут трекпада ощущается
+            # одинаково медленно с медленным.
+            step = -event.delta * 3
         else:
-            # Win/Linux: event.delta кратен 120; 3 строки за один «щелчок».
-            step = -3 * (1 if event.delta > 0 else -1)
+            # Win/Linux: event.delta кратен 120 за стандартный тик колеса.
+            # Делим на 20 → 6 строк за тик. Раньше захардкоженно ставили 3
+            # независимо от delta, отсюда жалобы на медленный скролл, и
+            # быстрый спин колеса не давал пропорционально больше прокрутки.
+            step = -int(event.delta / 20)
         if step:
             canvas.yview_scroll(step, "units")
 
