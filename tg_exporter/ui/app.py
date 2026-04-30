@@ -97,6 +97,9 @@ class App(ctk.CTk):
         self._folder_index: int = 0
         self._folder_export_base: Optional[str] = None
         self._folder_log: list[str] = []
+        # Период из шапки фиксируется в момент запуска экспорта папки, чтобы
+        # все чаты пакета выгружались с одинаковым диапазоном дат.
+        self._folder_dates: tuple[Optional[datetime.datetime], Optional[datetime.datetime]] = (None, None)
 
         # Views
         self._container = ctk.CTkFrame(self, fg_color="transparent")
@@ -250,15 +253,11 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        # Применяем период если не задан кастомный диапазон
+        # Период берём только из модалки экспорта одного чата. Период
+        # из шапки относится к экспорту папки и сюда не подмешивается —
+        # иначе модалкин выбор «Все время» молча перекрывался шапкой.
         date_from = options.get("date_from")
         date_to = options.get("date_to")
-        if date_from is None and self._date_period_days > 0:
-            date_from = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=self._date_period_days)
-        if date_from is None and self._custom_date_from:
-            date_from = self._custom_date_from
-        if date_to is None and self._custom_date_to:
-            date_to = self._custom_date_to
 
         # Обновляем MarkdownSettings
         words = options.get("words_per_file", 50_000)
@@ -326,8 +325,22 @@ class App(ctk.CTk):
         self._folder_transcribe = transcribe
         self._folder_log = []
         self._folder_active = True
+        # Фиксируем период один раз — все чаты пакета пойдут с одинаковыми датами
+        self._folder_dates = self._resolve_folder_dates()
         self._worker.put_event("folder_progress", (0, len(dialogs), folder))
         self._export_next_in_folder()
+
+    def _resolve_folder_dates(self) -> tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
+        """Преобразует выбор периода в шапке в (date_from, date_to) для ExportTask.
+
+        Возвращает (None, None) если выбран «Все время».
+        """
+        if self._date_period_days > 0:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            return (now - datetime.timedelta(days=self._date_period_days), None)
+        if self._custom_date_from or self._custom_date_to:
+            return (self._custom_date_from, self._custom_date_to)
+        return (None, None)
 
     # ---- Profiles ----
 
@@ -537,12 +550,15 @@ class App(ctk.CTk):
         orch = ExportOrchestrator(self._client_mgr, self.config, self._history, deepgram_key)
 
         flat = self._folder_mode in ("Один .md на чат", "Один .md на папку")
+        date_from, date_to = self._folder_dates
         task = ExportTask(
             chat_id=getattr(dialog, "id", 0),
             chat_name=name,
             output_path=self._folder_export_base,
             format=ExportFormat.MARKDOWN if flat else ExportFormat.BOTH,
             transcribe_audio=self._folder_transcribe,
+            date_from=date_from,
+            date_to=date_to,
         )
         token = self._token
         self._worker.submit(

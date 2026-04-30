@@ -110,8 +110,9 @@ class ChatListView(ctk.CTkFrame):
             side="left", fill="y", padx=SPACING["sm"], pady=SPACING["xs"]
         )
 
-        # Период
-        ctk.CTkLabel(toolbar, text="Период", font=font(12), text_color=C["text_sec"]).pack(
+        # Период (применяется только при экспорте папки — для одного чата
+        # период выбирается в модалке экспорта).
+        ctk.CTkLabel(toolbar, text="Период (папка)", font=font(12), text_color=C["text_sec"]).pack(
             side="left", padx=(0, SPACING["xs"]), pady=_py
         )
         ctk.CTkOptionMenu(
