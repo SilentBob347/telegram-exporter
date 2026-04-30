@@ -95,32 +95,34 @@ class DatePickerButton(AppButton):
             date_pattern="yyyy-mm-dd",
             firstweekday="monday",
             showweeknumbers=False,
+            showothermonthdays=False,
             background=pick("card"),
             foreground=pick("text"),
             selectbackground=pick("primary"),
             selectforeground="#FFFFFF",
             normalbackground=pick("card"),
+            normalforeground=pick("text"),
             weekendbackground=pick("card"),
-            othermonthbackground=pick("bg"),
-            othermonthforeground=pick("text_dim"),
+            weekendforeground=pick("text"),
             headersbackground=pick("surface"),
             headersforeground=pick("text_sec"),
-            bordercolor=pick("border"),
-            font=("", 11),
+            bordercolor=pick("card"),
+            font=("Segoe UI", 12),
+            cursor="hand2",
         )
-        cal.pack(padx=4, pady=(4, 0))
+        cal.pack(padx=8, pady=(8, 4))
 
-        # Кнопка закрытия — на overrideredirect-окне FocusOut срабатывает
-        # ненадёжно (особенно на Windows), поэтому явный путь к закрытию
-        # обязателен на случай «передумал».
+        # Явная кнопка закрытия. FocusOut раньше пытался закрывать popup сам,
+        # но любой клик по внутренним стрелкам tkcalendar (выбор месяца/года)
+        # отнимает у popup фокус — popup схлопывался прежде, чем юзер успевал
+        # выбрать дату. Закрытие — только Escape или эта кнопка.
         AppButton(
             popup, text="Закрыть", variant="ghost", size="sm",
             command=self._close_popup,
-        ).pack(padx=4, pady=(2, 4), fill="x")
+        ).pack(padx=8, pady=(0, 8), fill="x")
 
         cal.bind("<<CalendarSelected>>", lambda _e: self._commit(cal.get_date()))
         popup.bind("<Escape>", lambda _e: self._close_popup())
-        popup.bind("<FocusOut>", lambda _e: self._close_popup())
         popup.after(50, popup.focus_set)
         self._popup = popup
 
