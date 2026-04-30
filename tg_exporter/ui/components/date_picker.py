@@ -1,4 +1,12 @@
-"""DatePickerButton — кнопка-календарь рядом с текстовым полем даты."""
+"""DatePickerButton — кнопка-календарь со встроенным popup-выбором даты.
+
+Раньше использовали tkcalendar, но он на ttk и плохо тематизируется под
+CustomTkinter (тонкие чёрно-белые стрелки, мелкий шрифт), плюс лицензирован
+под GPLv3, что тянет лицензию итогового бандла.
+
+Сейчас — свой простой календарь на CTkButton: нативно выглядит в светлой
+и тёмной теме, без внешних зависимостей.
+"""
 
 from __future__ import annotations
 
@@ -9,24 +17,27 @@ from typing import Callable, Optional
 
 from .button import AppButton
 from ..modal_utils import make_anchored_popup
-from ..theme import C, pick
+from ..theme import C, RADIUS, SPACING, font
+
+
+_WEEKDAY_LABELS = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+_MONTH_LABELS = (
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+)
 
 
 class DatePickerButton(AppButton):
     """
-    Маленькая кнопка с иконкой календаря. По клику открывает popup с
-    tkcalendar.Calendar; выбранная дата записывается в формате YYYY-MM-DD
-    в передаваемый StringVar.
+    Маленькая кнопка с иконкой календаря. По клику открывает popup
+    с выбором года/месяца/дня; выбранная дата в формате YYYY-MM-DD
+    пишется в переданный StringVar.
 
     Текстовое поле даты остаётся независимым — пользователь может либо
     набрать дату руками, либо выбрать кликом. После выбора дополнительно
     вызывается опциональный on_pick — для случаев, когда родитель
     биндится на FocusOut/Return текстового поля и не получает уведомление
     при программной установке переменной.
-
-    tkcalendar импортируется лениво: его babel-зависимость на старте
-    приложения сканирует locale-данные (~50 ms), а календарь нужен
-    только при клике на кнопку.
     """
 
     def __init__(
@@ -49,20 +60,13 @@ class DatePickerButton(AppButton):
         self._target = target_var
         self._on_pick = on_pick
         self._popup: Optional[ctk.CTkToplevel] = None
-        # Если кнопку уничтожают, пока popup открыт, popup останется висеть
+        # Если кнопку уничтожают, пока popup открыт — popup останется висеть
         # отдельным окном.
         self.bind("<Destroy>", lambda _e: self._close_popup(), add="+")
 
     # ---- Internal ----
 
     def _open_picker(self) -> None:
-        try:
-            from tkcalendar import Calendar
-        except ImportError:
-            # tkcalendar не установлен — кнопка тихо no-op, текстовый
-            # ввод остаётся доступным.
-            return
-
         if self._popup is not None and self._popup.winfo_exists():
             try:
                 self._popup.lift()
@@ -71,11 +75,11 @@ class DatePickerButton(AppButton):
                 pass
             return
 
-        cur = datetime.date.today()
+        initial = datetime.date.today()
         raw = (self._target.get() or "").strip()
         if raw:
             try:
-                cur = datetime.date.fromisoformat(raw[:10])
+                initial = datetime.date.fromisoformat(raw[:10])
             except ValueError:
                 pass
 
@@ -86,42 +90,13 @@ class DatePickerButton(AppButton):
             return
 
         popup = make_anchored_popup(self, x, y, fg_color=C["card"])
-
-        cal = Calendar(
-            popup,
-            year=cur.year,
-            month=cur.month,
-            day=cur.day,
-            date_pattern="yyyy-mm-dd",
-            firstweekday="monday",
-            showweeknumbers=False,
-            showothermonthdays=False,
-            background=pick("card"),
-            foreground=pick("text"),
-            selectbackground=pick("primary"),
-            selectforeground="#FFFFFF",
-            normalbackground=pick("card"),
-            normalforeground=pick("text"),
-            weekendbackground=pick("card"),
-            weekendforeground=pick("text"),
-            headersbackground=pick("surface"),
-            headersforeground=pick("text_sec"),
-            bordercolor=pick("card"),
-            font=("Segoe UI", 12),
-            cursor="hand2",
+        _CalendarFrame(popup, initial=initial, on_pick=self._commit).pack(
+            padx=SPACING["sm"], pady=(SPACING["sm"], SPACING["xs"]),
         )
-        cal.pack(padx=8, pady=(8, 4))
-
-        # Явная кнопка закрытия. FocusOut раньше пытался закрывать popup сам,
-        # но любой клик по внутренним стрелкам tkcalendar (выбор месяца/года)
-        # отнимает у popup фокус — popup схлопывался прежде, чем юзер успевал
-        # выбрать дату. Закрытие — только Escape или эта кнопка.
         AppButton(
             popup, text="Закрыть", variant="ghost", size="sm",
             command=self._close_popup,
-        ).pack(padx=8, pady=(0, 8), fill="x")
-
-        cal.bind("<<CalendarSelected>>", lambda _e: self._commit(cal.get_date()))
+        ).pack(padx=SPACING["sm"], pady=(0, SPACING["sm"]), fill="x")
         popup.bind("<Escape>", lambda _e: self._close_popup())
         popup.after(50, popup.focus_set)
         self._popup = popup
@@ -140,3 +115,131 @@ class DatePickerButton(AppButton):
             except tk.TclError:
                 pass
             self._popup = None
+
+
+class _CalendarFrame(ctk.CTkFrame):
+    """Сетка с выбором дня + навигация по месяцам/годам.
+
+    Кнопки ячеек создаются один раз, рендер меняет им только текст,
+    цвет и команду — без пересоздания виджетов.
+    """
+
+    def __init__(
+        self,
+        master,
+        initial: datetime.date,
+        on_pick: Callable[[str], None],
+    ) -> None:
+        super().__init__(master, fg_color="transparent")
+        self._year = initial.year
+        self._month = initial.month
+        self._selected = initial
+        self._on_pick = on_pick
+        self._day_buttons: list[ctk.CTkButton] = []
+        self._build()
+        self._render()
+
+    def _build(self) -> None:
+        # Навигация: ◀◀ ◀  Месяц Год  ▶ ▶▶
+        nav = ctk.CTkFrame(self, fg_color="transparent")
+        nav.pack(fill="x", pady=(0, SPACING["sm"]))
+        AppButton(
+            nav, text="«", variant="ghost", size="sm", width=28,
+            command=lambda: self._shift_year(-1),
+        ).pack(side="left")
+        AppButton(
+            nav, text="‹", variant="ghost", size="sm", width=24,
+            command=lambda: self._shift_month(-1),
+        ).pack(side="left", padx=(SPACING["xs"], 0))
+        self._title_lbl = ctk.CTkLabel(
+            nav, text="", font=font(13, "bold"), text_color=C["text"],
+        )
+        self._title_lbl.pack(side="left", expand=True)
+        AppButton(
+            nav, text="›", variant="ghost", size="sm", width=24,
+            command=lambda: self._shift_month(1),
+        ).pack(side="right", padx=(0, SPACING["xs"]))
+        AppButton(
+            nav, text="»", variant="ghost", size="sm", width=28,
+            command=lambda: self._shift_year(1),
+        ).pack(side="right")
+
+        # Заголовки дней недели
+        headers = ctk.CTkFrame(self, fg_color="transparent")
+        headers.pack(fill="x", pady=(0, SPACING["xs"]))
+        for i, label in enumerate(_WEEKDAY_LABELS):
+            color = C["primary"] if i >= 5 else C["text_sec"]
+            ctk.CTkLabel(
+                headers, text=label, font=font(11, "bold"),
+                text_color=color, width=32,
+            ).grid(row=0, column=i, padx=1)
+
+        # Сетка 6×7 кнопок-дней
+        grid_frame = ctk.CTkFrame(self, fg_color="transparent")
+        grid_frame.pack()
+        for row in range(6):
+            for col in range(7):
+                btn = ctk.CTkButton(
+                    grid_frame, text="",
+                    width=32, height=28,
+                    corner_radius=RADIUS["sm"],
+                    font=font(12),
+                    border_width=0,
+                )
+                btn.grid(row=row, column=col, padx=1, pady=1)
+                self._day_buttons.append(btn)
+
+    # ---- Navigation ----
+
+    def _shift_month(self, delta: int) -> None:
+        m = self._month + delta
+        y = self._year
+        while m > 12:
+            m -= 12
+            y += 1
+        while m < 1:
+            m += 12
+            y -= 1
+        self._month = m
+        self._year = y
+        self._render()
+
+    def _shift_year(self, delta: int) -> None:
+        self._year += delta
+        self._render()
+
+    # ---- Render ----
+
+    def _render(self) -> None:
+        self._title_lbl.configure(
+            text=f"{_MONTH_LABELS[self._month - 1]} {self._year}",
+        )
+
+        first = datetime.date(self._year, self._month, 1)
+        start = first - datetime.timedelta(days=first.weekday())
+        today = datetime.date.today()
+
+        for i, btn in enumerate(self._day_buttons):
+            d = start + datetime.timedelta(days=i)
+            in_month = (d.month == self._month)
+            is_selected = (d == self._selected)
+            is_today = (d == today)
+
+            if is_selected:
+                fg = C["primary"]
+                text_color = C["primary_text"]
+                hover = C["primary_h"]
+            else:
+                fg = "transparent"
+                text_color = C["text"] if in_month else C["text_dim"]
+                hover = C["card_hover"]
+
+            btn.configure(
+                text=str(d.day),
+                fg_color=fg,
+                text_color=text_color,
+                hover_color=hover,
+                border_width=1 if is_today and not is_selected else 0,
+                border_color=C["primary"] if is_today else C["card"],
+                command=lambda d=d: self._on_pick(d.isoformat()),
+            )

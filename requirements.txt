@@ -22,9 +22,3 @@ PySocks>=1.7,<2.0
 faster-whisper>=1.0,<2.0
 
 # Deepgram uses stdlib urllib, no extra deps required.
-
-# Calendar popup widget for date pickers in export and folder filters.
-# NOTE: tkcalendar is GPLv3-licensed; combined distribution would have to
-# follow GPL terms. The application code itself stays MIT, but downstream
-# packagers should be aware of the implication.
-tkcalendar>=1.6,<2.0
