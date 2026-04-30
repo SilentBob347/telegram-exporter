@@ -18,6 +18,7 @@ import customtkinter as ctk
 from ..theme import C, SPACING, WIDGET, font, font_display
 from ..components.button import AppButton
 from ..components.entry import AppEntry
+from ..components.date_picker import DatePickerButton
 from ..components.progress_bar import ExportProgressWidget
 from ..modal_utils import prepare_modal, show_modal, setup_smooth_scroll
 
@@ -91,12 +92,27 @@ class ExportModal(ctk.CTkToplevel):
         self._date_row = ctk.CTkFrame(scroll, fg_color="transparent")
         self._date_from_var = tk.StringVar()
         self._date_to_var = tk.StringVar()
-        ctk.CTkLabel(self._date_row, text="От", text_color=C["text_sec"], font=font(12)).pack(side="left")
-        AppEntry(self._date_row, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
+
+        date_inputs = ctk.CTkFrame(self._date_row, fg_color="transparent")
+        date_inputs.pack(fill="x")
+        ctk.CTkLabel(date_inputs, text="От", text_color=C["text_sec"], font=font(12)).pack(side="left")
+        AppEntry(date_inputs, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
                  textvariable=self._date_from_var).pack(side="left", padx=(6, 0))
-        ctk.CTkLabel(self._date_row, text="До", text_color=C["text_sec"], font=font(12)).pack(side="left", padx=(12, 0))
-        AppEntry(self._date_row, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
+        DatePickerButton(date_inputs, target_var=self._date_from_var).pack(
+            side="left", padx=(SPACING["xs"], 0)
+        )
+        ctk.CTkLabel(date_inputs, text="До", text_color=C["text_sec"], font=font(12)).pack(side="left", padx=(12, 0))
+        AppEntry(date_inputs, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
                  textvariable=self._date_to_var).pack(side="left", padx=(6, 0))
+        DatePickerButton(date_inputs, target_var=self._date_to_var).pack(
+            side="left", padx=(SPACING["xs"], 0)
+        )
+
+        ctk.CTkLabel(
+            self._date_row,
+            text="Формат: YYYY-MM-DD, локальное время (например 2025-01-15)",
+            text_color=C["text_dim"], font=font(11),
+        ).pack(anchor="w", pady=(SPACING["xs"], 0))
 
         # ---- Формат ----
         self._add_section(scroll, "Формат вывода")

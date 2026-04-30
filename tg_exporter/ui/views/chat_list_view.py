@@ -14,6 +14,7 @@ import customtkinter as ctk
 from ..theme import C, RADIUS, SPACING, WIDGET, font, font_display
 from ..components.button import AppButton
 from ..components.entry import AppEntry
+from ..components.date_picker import DatePickerButton
 from ..components.tooltip import Tooltip
 
 if TYPE_CHECKING:
@@ -177,13 +178,32 @@ class ChatListView(ctk.CTkFrame):
         # === КАСТОМНЫЙ ДИАПАЗОН ДАТ ===
         self._date_range_row = ctk.CTkFrame(self, fg_color="transparent")
         ctk.CTkLabel(self._date_range_row, text="От", text_color=C["text_sec"], font=font(12)).pack(side="left", padx=(SPACING["xl"], SPACING["xs"]))
-        AppEntry(self._date_range_row, placeholder_text="ГГГГ-ММ-ДД", width=130, size="sm",
-                 textvariable=self._date_from_var).pack(side="left")
+        e_from = AppEntry(self._date_range_row, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
+                          textvariable=self._date_from_var)
+        e_from.pack(side="left")
+        DatePickerButton(
+            self._date_range_row,
+            target_var=self._date_from_var,
+            on_pick=self._apply_custom_dates,
+        ).pack(side="left", padx=(SPACING["xs"], 0))
+
         ctk.CTkLabel(self._date_range_row, text="До", text_color=C["text_sec"], font=font(12)).pack(side="left", padx=(SPACING["md"], SPACING["xs"]))
-        AppEntry(self._date_range_row, placeholder_text="ГГГГ-ММ-ДД", width=130, size="sm",
-                 textvariable=self._date_to_var).pack(side="left")
-        ctk.CTkLabel(self._date_range_row, text="Локальное время (напр. 2025-01-15)", text_color=C["text_dim"], font=font(11)).pack(side="left", padx=(SPACING["sm"], 0))
-        for e in [self._date_range_row.winfo_children()[1], self._date_range_row.winfo_children()[3]]:
+        e_to = AppEntry(self._date_range_row, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
+                        textvariable=self._date_to_var)
+        e_to.pack(side="left")
+        DatePickerButton(
+            self._date_range_row,
+            target_var=self._date_to_var,
+            on_pick=self._apply_custom_dates,
+        ).pack(side="left", padx=(SPACING["xs"], 0))
+
+        ctk.CTkLabel(
+            self._date_range_row,
+            text="Формат: YYYY-MM-DD, локальное время",
+            text_color=C["text_dim"], font=font(11),
+        ).pack(side="left", padx=(SPACING["sm"], 0))
+
+        for e in (e_from, e_to):
             e.bind("<FocusOut>", self._apply_custom_dates)
             e.bind("<Return>", self._apply_custom_dates)
         # скрыта по умолчанию
