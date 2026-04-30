@@ -297,9 +297,24 @@ def _make_progress_tqdm(
     size_mb: int,
 ):
     """
-    Возвращает класс-заглушку tqdm, совместимый с huggingface_hub.
+    Возвращает подкласс tqdm, совместимый с huggingface_hub.
     Агрегирует байты по всем параллельным загрузкам файлов и шлёт ratio в UI.
+
+    Подкласс настоящего tqdm, а не голая заглушка: huggingface_hub дёргает на
+    классе get_lock/set_lock/write для синхронизации параллельных загрузок.
+    Без них падает с `AttributeError: type object '_ProgressTqdm' has no
+    attribute 'get_lock'`. От tqdm наследуем всё это бесплатно, а рендер в
+    терминал глушим override'ом display() — у нас свой UI-прогресс, а в
+    PyInstaller-windowed sys.stderr может быть None и tqdm бы упал.
     """
+    try:
+        from tqdm.auto import tqdm as _BaseTqdm
+    except ImportError:
+        # tqdm — транзитивная зависимость huggingface_hub, в норме всегда есть.
+        # Если каким-то чудом нет — отдаём None, hub возьмёт свой дефолтный
+        # tqdm (без UI-прогресса, но скачивание будет работать).
+        return None
+
     # Общая статистика между экземплярами tqdm (snapshot_download создаёт их
     # отдельно для каждого файла).
     shared = {"total": 0, "done": 0, "last_emit": 0.0}
@@ -324,49 +339,24 @@ def _make_progress_tqdm(
             except Exception:
                 pass
 
-    class _ProgressTqdm:
+    class _ProgressTqdm(_BaseTqdm):
         def __init__(self, *args, **kwargs) -> None:
-            self._total = kwargs.get("total") or 0
-            self._n = 0
-            if self._total:
-                shared["total"] += self._total
+            super().__init__(*args, **kwargs)
+            if self.total:
+                shared["total"] += self.total
 
-        def update(self, n: int = 1) -> None:
-            self._n += n
+        def update(self, n: int = 1):
+            displayed = super().update(n)
             shared["done"] += n
             _emit()
+            return displayed
 
         def close(self) -> None:
-            # Если total был неизвестен — финальный n идёт в done как факт.
             _emit(force=True)
+            super().close()
 
-        def set_description(self, *_a, **_kw) -> None:
-            pass
-
-        def set_postfix(self, *_a, **_kw) -> None:
-            pass
-
-        def refresh(self, *_a, **_kw) -> None:
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc) -> None:
-            self.close()
-
-        def __iter__(self):
-            return iter([])
-
-        @property
-        def n(self) -> int:
-            return self._n
-
-        @n.setter
-        def n(self, value: int) -> None:
-            delta = value - self._n
-            self._n = value
-            shared["done"] += delta
-            _emit()
+        def display(self, *args, **kwargs):
+            # Подавляем рендер в терминал — у нас собственный UI-прогресс.
+            return True
 
     return _ProgressTqdm
