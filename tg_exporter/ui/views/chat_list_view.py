@@ -14,6 +14,7 @@ import customtkinter as ctk
 from ..theme import C, RADIUS, SPACING, WIDGET, font, font_display
 from ..components.button import AppButton
 from ..components.entry import AppEntry
+from ..components.tooltip import Tooltip
 
 if TYPE_CHECKING:
     from ..app import App
@@ -140,17 +141,38 @@ class ChatListView(ctk.CTkFrame):
             font=font(12),
         ).pack(side="left", padx=(SPACING["sm"], 0), pady=_py)
 
-        # Транскрипция
+        # Транскрипция (только для экспорта папки — для одного чата
+        # настраивается отдельно в модалке экспорта).
         self._folder_transcribe_var = tk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             toolbar,
-            text="Транскрипция",
+            text="Транскрипция (папка)",
             variable=self._folder_transcribe_var,
             font=font(12),
             text_color=C["text_sec"],
             checkbox_width=16, checkbox_height=16,
             corner_radius=4,
-        ).pack(side="left", padx=(SPACING["sm"], SPACING["md"]), pady=_py)
+        ).pack(side="left", padx=(SPACING["sm"], SPACING["xs"]), pady=_py)
+
+        hint_lbl = ctk.CTkLabel(
+            toolbar,
+            text="?",
+            font=font(11, "bold"),
+            text_color=C["text_sec"],
+            cursor="hand2",
+            width=16, height=16,
+            fg_color=C["card"],
+            corner_radius=8,
+        )
+        hint_lbl.pack(side="left", padx=(0, SPACING["md"]), pady=_py)
+        Tooltip(
+            hint_lbl,
+            "Распознать речь в голосовых сообщениях и видеокружках для всех "
+            "чатов выбранной папки. Текст транскрипции попадает в экспорт как "
+            "обычное сообщение. Замедляет выгрузку — для больших папок может "
+            "занять часы. Провайдер транскрипции и модель Whisper "
+            "настраиваются в опциях экспорта одного чата.",
+        )
 
         # === КАСТОМНЫЙ ДИАПАЗОН ДАТ ===
         self._date_range_row = ctk.CTkFrame(self, fg_color="transparent")
