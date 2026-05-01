@@ -332,33 +332,57 @@ class ExportOrchestrator:
     # ---- Helpers ----
 
     def _count_messages(self, c, dialog, task: ExportTask) -> Optional[int]:
-        try:
-            kwargs: dict = {"limit": 0}
-            if task.topic_id is not None:
-                kwargs["reply_to"] = task.topic_id
-            if task.is_incremental_with_offset:
-                kwargs["min_id"] = task.last_exported_id
-
-            total_all = getattr(c.get_messages(dialog, **kwargs), "total", None)
-            if total_all is None:
+        # Если фильтра по датам нет — total из GetHistoryRequest корректен
+        # (это общее число сообщений в чате/топике).
+        if task.date_from is None and task.date_to is None:
+            try:
+                kwargs: dict = {"limit": 0}
+                if task.topic_id is not None:
+                    kwargs["reply_to"] = task.topic_id
+                if task.is_incremental_with_offset:
+                    kwargs["min_id"] = task.last_exported_id
+                return getattr(c.get_messages(dialog, **kwargs), "total", None)
+            except Exception as exc:
+                logger.warning(f"_count_messages (no date filter) failed: {exc}")
                 return None
 
-            if task.date_from is not None:
-                before_from = getattr(c.get_messages(dialog, offset_date=task.date_from, **kwargs), "total", 0) or 0
-                total = max(0, total_all - before_from)
-            else:
-                total = total_all
+        # Иначе считаем через messages.search: GetHistoryRequest возвращает
+        # count = всего сообщений в чате независимо от offset_date, а search
+        # умеет фильтровать по min_date/max_date — так получаем правильное
+        # число сообщений в окне дат.
+        try:
+            from telethon.tl import functions, types
 
-            if task.date_to is not None:
-                after_to = task.date_to + datetime.timedelta(days=1)
-                before_to = getattr(c.get_messages(dialog, offset_date=after_to, **kwargs), "total", 0) or 0
-                if task.date_from is not None:
-                    total = max(0, total - (total_all - before_to))
-                else:
-                    total = before_to
+            try:
+                input_peer = c.get_input_entity(dialog)
+            except Exception:
+                input_peer = dialog.entity
 
-            return total
-        except Exception:
+            max_date = (
+                task.date_to + datetime.timedelta(days=1)
+                if task.date_to is not None
+                else None
+            )
+
+            request = functions.messages.SearchRequest(
+                peer=input_peer,
+                q="",
+                filter=types.InputMessagesFilterEmpty(),
+                min_date=task.date_from,
+                max_date=max_date,
+                offset_id=0,
+                add_offset=0,
+                limit=1,
+                max_id=0,
+                min_id=task.last_exported_id or 0,
+                hash=0,
+                from_id=None,
+                top_msg_id=task.topic_id,
+            )
+            result = c(request)
+            return getattr(result, "count", None)
+        except Exception as exc:
+            logger.warning(f"_count_messages (search) failed: {exc}")
             return None
 
 
