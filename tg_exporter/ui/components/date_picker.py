@@ -60,6 +60,8 @@ class DatePickerButton(AppButton):
         self._target = target_var
         self._on_pick = on_pick
         self._popup: Optional[ctk.CTkToplevel] = None
+        self._outside_host: Optional[tk.Misc] = None
+        self._outside_bind_id: Optional[str] = None
         # Если кнопку уничтожают, пока popup открыт — popup останется висеть
         # отдельным окном.
         self.bind("<Destroy>", lambda _e: self._close_popup(), add="+")
@@ -67,12 +69,9 @@ class DatePickerButton(AppButton):
     # ---- Internal ----
 
     def _open_picker(self) -> None:
+        # Toggle: повторный клик по иконке закрывает уже открытый popup.
         if self._popup is not None and self._popup.winfo_exists():
-            try:
-                self._popup.lift()
-                self._popup.focus_set()
-            except tk.TclError:
-                pass
+            self._close_popup()
             return
 
         initial = datetime.date.today()
@@ -101,6 +100,45 @@ class DatePickerButton(AppButton):
         popup.after(50, popup.focus_set)
         self._popup = popup
 
+        # Закрытие по клику вне popup'а. Биндим на тот Toplevel, в котором
+        # живёт сама иконка (модалка экспорта или главное окно). Сам popup —
+        # отдельный Toplevel, его клики сюда не приходят, поэтому внутри
+        # него можно спокойно тыкать по дням и стрелкам.
+        try:
+            host = self.winfo_toplevel()
+        except tk.TclError:
+            host = None
+        if host is not None:
+            self._outside_host = host
+            self._outside_bind_id = host.bind(
+                "<Button-1>", self._on_outside_click, add="+",
+            )
+
+    def _on_outside_click(self, event) -> None:
+        if self._popup is None or not self._popup.winfo_exists():
+            return
+        w = event.widget
+        try:
+            toplevel = w.winfo_toplevel()
+        except tk.TclError:
+            return
+        # Клик внутри popup'а — игнор (на всякий случай, обычно сюда не доходит).
+        if toplevel is self._popup:
+            return
+        # Клик по самой иконке (или её внутренним подвиджетам CTk) — пусть
+        # сработает её command и сам сделает toggle. Иначе будет close+reopen.
+        if self._is_descendant(w, self):
+            return
+        self._close_popup()
+
+    @staticmethod
+    def _is_descendant(widget, ancestor) -> bool:
+        while widget is not None:
+            if widget is ancestor:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
     def _commit(self, value: str) -> None:
         self._target.set(value)
         if self._on_pick is not None:
@@ -108,6 +146,13 @@ class DatePickerButton(AppButton):
         self._close_popup()
 
     def _close_popup(self) -> None:
+        if self._outside_host is not None and self._outside_bind_id is not None:
+            try:
+                self._outside_host.unbind("<Button-1>", self._outside_bind_id)
+            except tk.TclError:
+                pass
+        self._outside_host = None
+        self._outside_bind_id = None
         if self._popup is not None:
             try:
                 if self._popup.winfo_exists():
