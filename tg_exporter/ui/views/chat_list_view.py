@@ -237,6 +237,13 @@ class ChatListView(ctk.CTkFrame):
         self._status_lbl.configure(text=text)
         self._listbox.delete(0, tk.END)
 
+    def show_refreshing(self) -> None:
+        """Мягкий «обновление» без чистки списка — старые чаты остаются
+        видимыми, пока фон не вернёт новые. Иначе при медленной/висящей
+        выгрузке у пользователя пустой экран и впечатление, что приложение
+        зависло — тогда как `_all_dialogs` ещё содержит прошлый снапшот."""
+        self._status_lbl.configure(text="Обновление списка чатов...")
+
     def render_chats(self, dialogs: list) -> None:
         self.refresh_account_switcher()
         self._dialogs = dialogs or []

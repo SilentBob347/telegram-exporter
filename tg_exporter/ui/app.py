@@ -213,7 +213,13 @@ class App(ctk.CTk):
     # ---- Chat list actions ----
 
     def load_chats(self) -> None:
-        self.chats_view.show_loading()
+        # На рефреше (когда уже есть чаты) держим список видимым — иначе при
+        # медленном/завивающем get_dialogs() пользователь видит пустой
+        # «Загрузка чатов...» и думает, что всё сломалось.
+        if self._all_dialogs:
+            self.chats_view.show_refreshing()
+        else:
+            self.chats_view.show_loading()
         self._worker.submit(self._bg_load_chats)
 
     def filter_chats(self, query: str = "") -> None:
@@ -491,6 +497,11 @@ class App(ctk.CTk):
                 filters = []
             self._process_filters(filters or [])
         except Exception as exc:
+            # На неудаче — пробрасываем error (модалка) И отдельным событием
+            # просим UI восстановить статус, иначе на рефреше «Обновление
+            # списка чатов...» останется висеть навсегда.
+            logger.error("load_chats failed", exc=exc)
+            self._worker.put_event("chats_load_failed", None)
             self._worker.put_event("error", str(exc))
 
     def _process_filters(self, filters) -> None:
@@ -583,6 +594,7 @@ class App(ctk.CTk):
         d.on("add_account_error",     self._on_add_account_error)
 
         d.on("chats_loaded",     self._on_chats_loaded)
+        d.on("chats_load_failed", self._on_chats_load_failed)
         d.on("folders_loaded",   lambda names: self.chats_view.set_folders(names))
         d.on("error",            self._on_error)
         d.on("info",             self._on_info)
@@ -652,6 +664,14 @@ class App(ctk.CTk):
             self.chats_view._search_entry.get().strip()
             if hasattr(self.chats_view, "_search_entry") else ""
         )
+
+    def _on_chats_load_failed(self, _payload) -> None:
+        # Возвращаем статус «Чатов: N» вместо застрявшего «Обновление...».
+        # Если ничего не было загружено раньше — пусто.
+        if self._all_dialogs:
+            self.chats_view.set_status(f"Чатов: {len(self._all_dialogs)}")
+        else:
+            self.chats_view.set_status("Не удалось загрузить чаты")
 
     def _on_error(self, msg: str) -> None:
         import tkinter.messagebox as mb

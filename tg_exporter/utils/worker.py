@@ -139,9 +139,19 @@ class EventDispatcher:
         for handler in self._handlers.get(event_type, []):
             try:
                 handler(payload)
-            except Exception:
-                # Ошибка в обработчике не должна ронять polling loop
-                pass
+            except Exception as exc:
+                # Ошибка в обработчике не должна ронять polling loop, но
+                # глушить молча — слишком дорого: симптомы вроде
+                # «бесконечная загрузка чатов» не оставляли никаких следов.
+                # Логируем здесь, ловится наверху.
+                try:
+                    from .logger import logger
+                    logger.error(
+                        f"dispatch handler for '{event_type}' failed: {exc}",
+                        exc=exc,
+                    )
+                except Exception:
+                    pass
 
     def dispatch_event(self, event: UIEvent) -> None:
         self.dispatch(event[0], event[1])
