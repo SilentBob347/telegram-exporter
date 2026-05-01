@@ -332,8 +332,8 @@ class ExportOrchestrator:
     # ---- Helpers ----
 
     def _count_messages(self, c, dialog, task: ExportTask) -> Optional[int]:
-        # Если фильтра по датам нет — total из GetHistoryRequest корректен
-        # (это общее число сообщений в чате/топике).
+        # Без фильтра по датам — total из GetHistoryRequest корректен
+        # (это общее число сообщений в чате/топике, чем мы и пользуемся).
         if task.date_from is None and task.date_to is None:
             try:
                 kwargs: dict = {"limit": 0}
@@ -346,43 +346,57 @@ class ExportOrchestrator:
                 logger.warning(f"_count_messages (no date filter) failed: {exc}")
                 return None
 
-        # Иначе считаем через messages.search: GetHistoryRequest возвращает
-        # count = всего сообщений в чате независимо от offset_date, а search
-        # умеет фильтровать по min_date/max_date — так получаем правильное
-        # число сообщений в окне дат.
+        # Для топиков с датой ID не последовательны (сообщения топика
+        # перемешаны с остальным чатом), поэтому оценка по ID не работает.
+        # Возвращаем None — UI покажет бегущий счётчик без знаменателя.
+        if task.topic_id is not None:
+            return None
+
+        # С фильтром по датам надёжного «count» в Telegram нет:
+        #  - GetHistoryRequest.count = всё в чате (offset_date не учитывается);
+        #  - SearchRequest.count при пустых q+filter Telegram трактует
+        #    как «нет фильтра» и тоже возвращает общее число сообщений
+        #    (отсюда баг «Неделя и Месяц дают одинаковые 22 984»).
+        # Поэтому оцениваем количество по разнице ID граничных сообщений
+        # диапазона. Для активных чатов IDs плотные и оценка совпадает
+        # с реальным count в пределах единиц процентов; точность нам
+        # тут нужна не больше, чем для прогресс-бара.
         try:
-            from telethon.tl import functions, types
+            # Левая граница диапазона: первое сообщение с date >= date_from.
+            # reverse=True + offset_date=X даёт сообщения «после X» в порядке
+            # от старых к новым — берём первое.
+            if task.date_from is not None:
+                first_msgs = c.get_messages(
+                    dialog, offset_date=task.date_from, limit=1, reverse=True,
+                )
+                if not first_msgs:
+                    return 0  # В окне нет сообщений
+                first_id = first_msgs[0].id
+            else:
+                first_id = 1
 
-            try:
-                input_peer = c.get_input_entity(dialog)
-            except Exception:
-                input_peer = dialog.entity
+            # Инкрементальный режим — сдвигаем левую границу вперёд.
+            if task.is_incremental_with_offset and task.last_exported_id:
+                first_id = max(first_id, task.last_exported_id + 1)
 
-            max_date = (
-                task.date_to + datetime.timedelta(days=1)
-                if task.date_to is not None
-                else None
-            )
+            # Правая граница: последнее сообщение строго до date_to+1day,
+            # либо просто последнее сообщение в чате.
+            if task.date_to is not None:
+                last_offset = task.date_to + datetime.timedelta(days=1)
+                last_msgs = c.get_messages(dialog, offset_date=last_offset, limit=1)
+            else:
+                last_msgs = c.get_messages(dialog, limit=1)
 
-            request = functions.messages.SearchRequest(
-                peer=input_peer,
-                q="",
-                filter=types.InputMessagesFilterEmpty(),
-                min_date=task.date_from,
-                max_date=max_date,
-                offset_id=0,
-                add_offset=0,
-                limit=1,
-                max_id=0,
-                min_id=task.last_exported_id or 0,
-                hash=0,
-                from_id=None,
-                top_msg_id=task.topic_id,
-            )
-            result = c(request)
-            return getattr(result, "count", None)
+            if not last_msgs:
+                return 0
+            last_id = last_msgs[0].id
+
+            if last_id < first_id:
+                return 0
+
+            return last_id - first_id + 1
         except Exception as exc:
-            logger.warning(f"_count_messages (search) failed: {exc}")
+            logger.warning(f"_count_messages (id-estimate) failed: {exc}")
             return None
 
 
