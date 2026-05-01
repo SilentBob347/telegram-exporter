@@ -4,6 +4,7 @@ WhisperTranscriber — локальная транскрипция через fa
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import tempfile
@@ -312,7 +313,11 @@ class _NullWriter:
         return False
 
     def fileno(self) -> int:
-        raise OSError("not supported")
+        # io.UnsupportedOperation — стандартный сигнал «у потока нет fd»
+        # (так делает io.StringIO.fileno). Подкласс OSError, поэтому код,
+        # ловящий OSError, ничего не заметит, но более специфичный тип
+        # помогает диагностике, если кто-то наверх его пробросит.
+        raise io.UnsupportedOperation("fileno")
 
 
 def _make_progress_tqdm(
