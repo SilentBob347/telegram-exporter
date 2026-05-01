@@ -291,6 +291,30 @@ def _whisper_cache_exists(model_size: str) -> bool:
         return False
 
 
+class _NullWriter:
+    """
+    Дамми-файл для tqdm. В PyInstaller-windowed (--noconsole) sys.stderr
+    становится None, и tqdm падает с `'NoneType' object has no attribute
+    'write'` при первой же попытке отрисовки/clear()/close(). Override'а
+    display() недостаточно — tqdm пишет в self.fp и из других мест.
+    """
+
+    def write(self, *args, **kwargs) -> int:
+        return 0
+
+    def flush(self, *args, **kwargs) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        raise OSError("not supported")
+
+
 def _make_progress_tqdm(
     progress_cb: Optional[ProgressCallback],
     model_size: str,
@@ -304,8 +328,7 @@ def _make_progress_tqdm(
     классе get_lock/set_lock/write для синхронизации параллельных загрузок.
     Без них падает с `AttributeError: type object '_ProgressTqdm' has no
     attribute 'get_lock'`. От tqdm наследуем всё это бесплатно, а рендер в
-    терминал глушим override'ом display() — у нас свой UI-прогресс, а в
-    PyInstaller-windowed sys.stderr может быть None и tqdm бы упал.
+    терминал глушим через подмену file= на _NullWriter в __init__.
     """
     try:
         from tqdm.auto import tqdm as _BaseTqdm
@@ -341,6 +364,11 @@ def _make_progress_tqdm(
 
     class _ProgressTqdm(_BaseTqdm):
         def __init__(self, *args, **kwargs) -> None:
+            # Если file не задан явно — подменяем на null-writer.
+            # Иначе tqdm попытается писать в sys.stderr, который в
+            # PyInstaller --noconsole = None.
+            if kwargs.get("file") is None:
+                kwargs["file"] = _NullWriter()
             super().__init__(*args, **kwargs)
             if self.total:
                 shared["total"] += self.total
@@ -356,7 +384,7 @@ def _make_progress_tqdm(
             super().close()
 
         def display(self, *args, **kwargs):
-            # Подавляем рендер в терминал — у нас собственный UI-прогресс.
+            # Подавляем рендер — у нас собственный UI-прогресс.
             return True
 
     return _ProgressTqdm
