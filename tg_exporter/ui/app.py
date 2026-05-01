@@ -36,6 +36,7 @@ from ..core.orchestrator import ExportOrchestrator
 from ..core.profiles import ProfileManager, Profile
 from ..services.export_history import ExportHistory
 from ..utils.cancellation import CancellationToken
+from ..utils.dates import resolve_period_to_range
 from ..utils.worker import BackgroundWorker, EventDispatcher
 from ..utils.logger import logger
 
@@ -337,16 +338,12 @@ class App(ctk.CTk):
         self._export_next_in_folder()
 
     def _resolve_folder_dates(self) -> tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
-        """Преобразует выбор периода в шапке в (date_from, date_to) для ExportTask.
-
-        Возвращает (None, None) если выбран «Все время».
-        """
-        if self._date_period_days > 0:
-            now = datetime.datetime.now(datetime.timezone.utc)
-            return (now - datetime.timedelta(days=self._date_period_days), None)
-        if self._custom_date_from or self._custom_date_to:
-            return (self._custom_date_from, self._custom_date_to)
-        return (None, None)
+        """Снимок шапочного периода для ExportTask. Логика — в utils.dates."""
+        return resolve_period_to_range(
+            self._date_period_days,
+            self._custom_date_from,
+            self._custom_date_to,
+        )
 
     # ---- Profiles ----
 
