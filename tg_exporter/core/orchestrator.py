@@ -373,7 +373,14 @@ class ExportOrchestrator:
                     return 0  # В окне нет сообщений
                 first_id = first_msgs[0].id
             else:
-                first_id = 1
+                # date_to-only: оцениваем относительно реального самого старого
+                # сообщения чата, а не с id=1. Иначе для активных чатов, где
+                # первый ID может быть 10 000+, формула last - first + 1 даёт
+                # ~last_id и переоценивает прогресс в разы.
+                oldest = c.get_messages(dialog, limit=1, reverse=True)
+                if not oldest:
+                    return 0
+                first_id = oldest[0].id
 
             # Инкрементальный режим — сдвигаем левую границу вперёд.
             if task.is_incremental_with_offset and task.last_exported_id:
