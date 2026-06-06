@@ -36,6 +36,7 @@ from ..core.orchestrator import ExportOrchestrator
 from ..core.profiles import ProfileManager, Profile
 from ..services.export_history import ExportHistory
 from ..utils.cancellation import CancellationToken
+from ..utils.dates import resolve_period_to_range
 from ..utils.worker import BackgroundWorker, EventDispatcher
 from ..utils.logger import logger
 
@@ -97,6 +98,9 @@ class App(ctk.CTk):
         self._folder_index: int = 0
         self._folder_export_base: Optional[str] = None
         self._folder_log: list[str] = []
+        # Период из шапки фиксируется в момент запуска экспорта папки, чтобы
+        # все чаты пакета выгружались с одинаковым диапазоном дат.
+        self._folder_dates: tuple[Optional[datetime.datetime], Optional[datetime.datetime]] = (None, None)
 
         # Views
         self._container = ctk.CTkFrame(self, fg_color="transparent")
@@ -210,7 +214,13 @@ class App(ctk.CTk):
     # ---- Chat list actions ----
 
     def load_chats(self) -> None:
-        self.chats_view.show_loading()
+        # На рефреше (когда уже есть чаты) держим список видимым — иначе при
+        # медленном/завивающем get_dialogs() пользователь видит пустой
+        # «Загрузка чатов...» и думает, что всё сломалось.
+        if self._all_dialogs:
+            self.chats_view.show_refreshing()
+        else:
+            self.chats_view.show_loading()
         self._worker.submit(self._bg_load_chats)
 
     def filter_chats(self, query: str = "") -> None:
@@ -250,15 +260,11 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        # Применяем период если не задан кастомный диапазон
+        # Период берём только из модалки экспорта одного чата. Период
+        # из шапки относится к экспорту папки и сюда не подмешивается —
+        # иначе модалкин выбор «Все время» молча перекрывался шапкой.
         date_from = options.get("date_from")
         date_to = options.get("date_to")
-        if date_from is None and self._date_period_days > 0:
-            date_from = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=self._date_period_days)
-        if date_from is None and self._custom_date_from:
-            date_from = self._custom_date_from
-        if date_to is None and self._custom_date_to:
-            date_to = self._custom_date_to
 
         # Обновляем MarkdownSettings
         words = options.get("words_per_file", 50_000)
@@ -326,8 +332,18 @@ class App(ctk.CTk):
         self._folder_transcribe = transcribe
         self._folder_log = []
         self._folder_active = True
+        # Фиксируем период один раз — все чаты пакета пойдут с одинаковыми датами
+        self._folder_dates = self._resolve_folder_dates()
         self._worker.put_event("folder_progress", (0, len(dialogs), folder))
         self._export_next_in_folder()
+
+    def _resolve_folder_dates(self) -> tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
+        """Снимок шапочного периода для ExportTask. Логика — в utils.dates."""
+        return resolve_period_to_range(
+            self._date_period_days,
+            self._custom_date_from,
+            self._custom_date_to,
+        )
 
     # ---- Profiles ----
 
@@ -478,6 +494,11 @@ class App(ctk.CTk):
                 filters = []
             self._process_filters(filters or [])
         except Exception as exc:
+            # На неудаче — пробрасываем error (модалка) И отдельным событием
+            # просим UI восстановить статус, иначе на рефреше «Обновление
+            # списка чатов...» останется висеть навсегда.
+            logger.error("load_chats failed", exc=exc)
+            self._worker.put_event("chats_load_failed", None)
             self._worker.put_event("error", str(exc))
 
     def _process_filters(self, filters) -> None:
@@ -537,12 +558,15 @@ class App(ctk.CTk):
         orch = ExportOrchestrator(self._client_mgr, self.config, self._history, deepgram_key)
 
         flat = self._folder_mode in ("Один .md на чат", "Один .md на папку")
+        date_from, date_to = self._folder_dates
         task = ExportTask(
             chat_id=getattr(dialog, "id", 0),
             chat_name=name,
             output_path=self._folder_export_base,
             format=ExportFormat.MARKDOWN if flat else ExportFormat.BOTH,
             transcribe_audio=self._folder_transcribe,
+            date_from=date_from,
+            date_to=date_to,
         )
         token = self._token
         self._worker.submit(
@@ -567,6 +591,7 @@ class App(ctk.CTk):
         d.on("add_account_error",     self._on_add_account_error)
 
         d.on("chats_loaded",     self._on_chats_loaded)
+        d.on("chats_load_failed", self._on_chats_load_failed)
         d.on("folders_loaded",   lambda names: self.chats_view.set_folders(names))
         d.on("error",            self._on_error)
         d.on("info",             self._on_info)
@@ -636,6 +661,14 @@ class App(ctk.CTk):
             self.chats_view._search_entry.get().strip()
             if hasattr(self.chats_view, "_search_entry") else ""
         )
+
+    def _on_chats_load_failed(self, _payload) -> None:
+        # Возвращаем статус «Чатов: N» вместо застрявшего «Обновление...».
+        # Если ничего не было загружено раньше — пусто.
+        if self._all_dialogs:
+            self.chats_view.set_status(f"Чатов: {len(self._all_dialogs)}")
+        else:
+            self.chats_view.set_status("Не удалось загрузить чаты")
 
     def _on_error(self, msg: str) -> None:
         import tkinter.messagebox as mb

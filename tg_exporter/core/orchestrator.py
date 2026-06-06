@@ -332,33 +332,78 @@ class ExportOrchestrator:
     # ---- Helpers ----
 
     def _count_messages(self, c, dialog, task: ExportTask) -> Optional[int]:
-        try:
-            kwargs: dict = {"limit": 0}
-            if task.topic_id is not None:
-                kwargs["reply_to"] = task.topic_id
-            if task.is_incremental_with_offset:
-                kwargs["min_id"] = task.last_exported_id
-
-            total_all = getattr(c.get_messages(dialog, **kwargs), "total", None)
-            if total_all is None:
+        # Без фильтра по датам — total из GetHistoryRequest корректен
+        # (это общее число сообщений в чате/топике, чем мы и пользуемся).
+        if task.date_from is None and task.date_to is None:
+            try:
+                kwargs: dict = {"limit": 0}
+                if task.topic_id is not None:
+                    kwargs["reply_to"] = task.topic_id
+                if task.is_incremental_with_offset:
+                    kwargs["min_id"] = task.last_exported_id
+                return getattr(c.get_messages(dialog, **kwargs), "total", None)
+            except Exception as exc:
+                logger.warning(f"_count_messages (no date filter) failed: {exc}")
                 return None
 
+        # Для топиков с датой ID не последовательны (сообщения топика
+        # перемешаны с остальным чатом), поэтому оценка по ID не работает.
+        # Возвращаем None — UI покажет бегущий счётчик без знаменателя.
+        if task.topic_id is not None:
+            return None
+
+        # С фильтром по датам надёжного «count» в Telegram нет:
+        #  - GetHistoryRequest.count = всё в чате (offset_date не учитывается);
+        #  - SearchRequest.count при пустых q+filter Telegram трактует
+        #    как «нет фильтра» и тоже возвращает общее число сообщений
+        #    (отсюда баг «Неделя и Месяц дают одинаковые 22 984»).
+        # Поэтому оцениваем количество по разнице ID граничных сообщений
+        # диапазона. Для активных чатов IDs плотные и оценка совпадает
+        # с реальным count в пределах единиц процентов; точность нам
+        # тут нужна не больше, чем для прогресс-бара.
+        try:
+            # Левая граница диапазона: первое сообщение с date >= date_from.
+            # reverse=True + offset_date=X даёт сообщения «после X» в порядке
+            # от старых к новым — берём первое.
             if task.date_from is not None:
-                before_from = getattr(c.get_messages(dialog, offset_date=task.date_from, **kwargs), "total", 0) or 0
-                total = max(0, total_all - before_from)
+                first_msgs = c.get_messages(
+                    dialog, offset_date=task.date_from, limit=1, reverse=True,
+                )
+                if not first_msgs:
+                    return 0  # В окне нет сообщений
+                first_id = first_msgs[0].id
             else:
-                total = total_all
+                # date_to-only: оцениваем относительно реального самого старого
+                # сообщения чата, а не с id=1. Иначе для активных чатов, где
+                # первый ID может быть 10 000+, формула last - first + 1 даёт
+                # ~last_id и переоценивает прогресс в разы.
+                oldest = c.get_messages(dialog, limit=1, reverse=True)
+                if not oldest:
+                    return 0
+                first_id = oldest[0].id
 
+            # Инкрементальный режим — сдвигаем левую границу вперёд.
+            if task.is_incremental_with_offset and task.last_exported_id:
+                first_id = max(first_id, task.last_exported_id + 1)
+
+            # Правая граница: последнее сообщение строго до date_to+1day,
+            # либо просто последнее сообщение в чате.
             if task.date_to is not None:
-                after_to = task.date_to + datetime.timedelta(days=1)
-                before_to = getattr(c.get_messages(dialog, offset_date=after_to, **kwargs), "total", 0) or 0
-                if task.date_from is not None:
-                    total = max(0, total - (total_all - before_to))
-                else:
-                    total = before_to
+                last_offset = task.date_to + datetime.timedelta(days=1)
+                last_msgs = c.get_messages(dialog, offset_date=last_offset, limit=1)
+            else:
+                last_msgs = c.get_messages(dialog, limit=1)
 
-            return total
-        except Exception:
+            if not last_msgs:
+                return 0
+            last_id = last_msgs[0].id
+
+            if last_id < first_id:
+                return 0
+
+            return last_id - first_id + 1
+        except Exception as exc:
+            logger.warning(f"_count_messages (id-estimate) failed: {exc}")
             return None
 
 

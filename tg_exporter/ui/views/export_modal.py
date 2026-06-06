@@ -17,9 +17,11 @@ import customtkinter as ctk
 
 from ..theme import C, SPACING, WIDGET, font, font_display
 from ..components.button import AppButton
+from ..components.date_range_row import DateRangeRow
 from ..components.entry import AppEntry
 from ..components.progress_bar import ExportProgressWidget
 from ..modal_utils import prepare_modal, show_modal, setup_smooth_scroll
+from ...utils.dates import parse_local_date
 
 if TYPE_CHECKING:
     from ..app import App
@@ -88,15 +90,14 @@ class ExportModal(ctk.CTkToplevel):
             command=self._on_period_change,
         ).pack(side="left")
 
-        self._date_row = ctk.CTkFrame(scroll, fg_color="transparent")
         self._date_from_var = tk.StringVar()
         self._date_to_var = tk.StringVar()
-        ctk.CTkLabel(self._date_row, text="От", text_color=C["text_sec"], font=font(12)).pack(side="left")
-        AppEntry(self._date_row, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
-                 textvariable=self._date_from_var).pack(side="left", padx=(6, 0))
-        ctk.CTkLabel(self._date_row, text="До", text_color=C["text_sec"], font=font(12)).pack(side="left", padx=(12, 0))
-        AppEntry(self._date_row, placeholder_text="ГГГГ-ММ-ДД", width=120, size="sm",
-                 textvariable=self._date_to_var).pack(side="left", padx=(6, 0))
+        self._date_row = DateRangeRow(
+            scroll,
+            var_from=self._date_from_var,
+            var_to=self._date_to_var,
+            hint="Формат: YYYY-MM-DD, локальное время (например 2025-01-15)",
+        )
 
         # ---- Формат ----
         self._add_section(scroll, "Формат вывода")
@@ -366,8 +367,8 @@ class ExportModal(ctk.CTkToplevel):
         period = self._period_var.get()
         date_from = date_to = None
         if period == "Свой период":
-            date_from = _parse_date(self._date_from_var.get())
-            date_to = _parse_date(self._date_to_var.get())
+            date_from = parse_local_date(self._date_from_var.get())
+            date_to = parse_local_date(self._date_to_var.get())
         elif period in _PERIOD_DAYS and _PERIOD_DAYS[period] > 0:
             import datetime as dt
             date_from = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=_PERIOD_DAYS[period])
@@ -392,21 +393,6 @@ class ExportModal(ctk.CTkToplevel):
 
 
 # ---- Helpers ----
-
-def _parse_date(raw: str):
-    """Naive-дата интерпретируется как локальное время, aware — приводится к UTC."""
-    import datetime as dt
-    raw = (raw or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.astimezone()
-    return parsed.astimezone(dt.timezone.utc)
-
 
 def _open_directory(path: str) -> None:
     system = platform.system()

@@ -1,13 +1,17 @@
 """
-Общие утилиты для модальных окон:
-- init_modal: правильное появление (без прыжка/мигания), фон, transient, фокус.
+Общие утилиты для модальных окон и popup'ов:
+- prepare_modal/show_modal: появление модалки без вспышки, фон, transient, фокус.
+- make_anchored_popup: overrideredirect-Toplevel (для тултипов/дропдаунов).
 - setup_smooth_scroll: одинаковая скорость прокрутки колесом на всех платформах.
 """
 
 from __future__ import annotations
 
 import sys
+import tkinter as tk
 from typing import Optional
+
+import customtkinter as ctk
 
 from .theme import C
 
@@ -100,6 +104,29 @@ def _bind_parent_focus_hint(modal, parent) -> None:
         pass
 
 
+def make_anchored_popup(parent, x: int, y: int, fg_color=None) -> ctk.CTkToplevel:
+    """Создаёт overrideredirect-Toplevel в координатах (x, y) экрана.
+
+    Используется для тултипов и popup-дропдаунов: без рамки, всегда
+    поверх, без записи в taskbar. wm_overrideredirect/attributes могут
+    бросить TclError на нестандартных WM — поглощаем, окно всё равно
+    останется рабочим.
+    """
+    popup = ctk.CTkToplevel(parent)
+    try:
+        popup.wm_overrideredirect(True)
+    except tk.TclError:
+        pass
+    try:
+        popup.attributes("-topmost", True)
+    except tk.TclError:
+        pass
+    if fg_color is not None:
+        popup.configure(fg_color=fg_color)
+    popup.geometry(f"+{x}+{y}")
+    return popup
+
+
 def setup_smooth_scroll(modal, scrollable_frame) -> None:
     """
     Адекватная скорость колеса мыши на всех ОС.
@@ -113,11 +140,13 @@ def setup_smooth_scroll(modal, scrollable_frame) -> None:
 
     def _scroll_fn(event):
         if sys.platform == "darwin":
-            # macOS: event.delta = ±1..±5; домножаем на 3 для комфортной скорости.
-            step = -3 if event.delta > 0 else 3
+            # macOS: event.delta = ±1..±5 (мелкие тики). Масштабируем по delta,
+            # чтобы быстрый прокрут трекпада не ощущался как медленный.
+            step = -event.delta * 3
         else:
-            # Win/Linux: event.delta кратен 120; 3 строки за один «щелчок».
-            step = -3 * (1 if event.delta > 0 else -1)
+            # Win/Linux: event.delta кратен 120 за тик колеса. Делим на 20
+            # → 6 строк; быстрый спин даёт пропорционально больше прокрутки.
+            step = -int(event.delta / 20)
         if step:
             canvas.yview_scroll(step, "units")
 

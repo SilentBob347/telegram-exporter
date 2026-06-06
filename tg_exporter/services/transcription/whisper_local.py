@@ -4,6 +4,7 @@ WhisperTranscriber — локальная транскрипция через fa
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import tempfile
@@ -291,25 +292,95 @@ def _whisper_cache_exists(model_size: str) -> bool:
         return False
 
 
+class _NullWriter:
+    """
+    Дамми-файл для tqdm. В PyInstaller-windowed (--noconsole) sys.stderr
+    становится None, и tqdm падает с `'NoneType' object has no attribute
+    'write'` при первой же попытке отрисовки/clear()/close(). Override'а
+    display() недостаточно — tqdm пишет в self.fp и из других мест.
+    """
+
+    def write(self, *args, **kwargs) -> int:
+        return 0
+
+    def flush(self, *args, **kwargs) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        # io.UnsupportedOperation — стандартный сигнал «у потока нет fd»
+        # (так делает io.StringIO.fileno). Подкласс OSError, поэтому код,
+        # ловящий OSError, ничего не заметит, но более специфичный тип
+        # помогает диагностике, если кто-то наверх его пробросит.
+        raise io.UnsupportedOperation("fileno")
+
+
 def _make_progress_tqdm(
     progress_cb: Optional[ProgressCallback],
     model_size: str,
     size_mb: int,
 ):
     """
-    Возвращает класс-заглушку tqdm, совместимый с huggingface_hub.
+    Возвращает подкласс tqdm, совместимый с huggingface_hub.
     Агрегирует байты по всем параллельным загрузкам файлов и шлёт ratio в UI.
+
+    Подкласс настоящего tqdm, а не голая заглушка: huggingface_hub дёргает на
+    классе get_lock/set_lock/write для синхронизации параллельных загрузок.
+    Без них падает с `AttributeError: type object '_ProgressTqdm' has no
+    attribute 'get_lock'`. От tqdm наследуем всё это бесплатно, а рендер в
+    терминал глушим через подмену file= на _NullWriter в __init__.
     """
-    # Общая статистика между экземплярами tqdm (snapshot_download создаёт их
-    # отдельно для каждого файла).
-    shared = {"total": 0, "done": 0, "last_emit": 0.0}
+    try:
+        from tqdm.auto import tqdm as _BaseTqdm
+    except ImportError:
+        # tqdm — транзитивная зависимость huggingface_hub, в норме всегда есть.
+        # Если каким-то чудом нет — отдаём None, hub возьмёт свой дефолтный
+        # tqdm (без UI-прогресса, но скачивание будет работать).
+        return None
+
+    # Общая статистика между экземплярами tqdm. В huggingface_hub >= 1.15.0
+    # snapshot_download создаёт нашим tqdm_class ДВА вида баров:
+    #   * байтовый родитель `bytes_progress` (unit="B", изначально total=0) —
+    #     его total hub накручивает прямым `bytes_progress.total += size` в
+    #     обход нашего __init__, а .update(n) (n — байты) идёт через наш update;
+    #   * служебный счётчик ФАЙЛОВ из thread_map (unit="it", total = число
+    #     файлов, 1–4), который тикает по +1 на завершённый файл.
+    # Если смешать оба — файловый total (≈4) отравляет байтовый знаменатель и
+    # прогресс застывает на «0 / 0 МБ (100%)». Поэтому учитываем ТОЛЬКО
+    # байтовые бары, а точный знаменатель берём прямо из их .total (который
+    # hub меняет на месте), с откатом на размер модели, пока total ещё 0.
+    shared = {"done": 0, "last_emit": 0.0, "byte_bars": []}
+
+    def _byte_total() -> int:
+        # Сумма актуальных .total всех байтовых баров (hub дописывает их на
+        # месте). 0, пока hub ещё не объявил размеры файлов.
+        return sum(int(getattr(b, "total", 0) or 0) for b in shared["byte_bars"])
+
+    def _looks_like_bytes_bar(bar) -> bool:
+        # Отличаем байтовый бар загрузки от служебного счётчика ФАЙЛОВ.
+        # Не завязываемся на точную строку unit="B" (она не запинена и может
+        # измениться в будущих версиях hub): байтовые бары hub всегда создаёт
+        # с unit_scale=True И единицей, начинающейся на "B" (B/iB), тогда как
+        # файловый счётчик из thread_map идёт с unit="it", unit_scale=False.
+        # Достаточно любого из признаков — это переживёт переименование "B".
+        unit = (getattr(bar, "unit", "") or "")
+        if unit[:1].upper() == "B":
+            return True
+        if getattr(bar, "unit_scale", False) and unit.lower() not in ("it", "items", ""):
+            return True
+        return False
 
     def _emit(force: bool = False) -> None:
         now = time.monotonic()
         if not force and (now - shared["last_emit"]) < 0.3:
             return
         shared["last_emit"] = now
-        total = shared["total"] or (size_mb * 1024 * 1024)
+        total = _byte_total() or (size_mb * 1024 * 1024)
         done = min(shared["done"], total)
         ratio = done / total if total > 0 else 0.0
         mb_done = done / (1024 * 1024)
@@ -324,49 +395,39 @@ def _make_progress_tqdm(
             except Exception:
                 pass
 
-    class _ProgressTqdm:
+    class _ProgressTqdm(_BaseTqdm):
         def __init__(self, *args, **kwargs) -> None:
-            self._total = kwargs.get("total") or 0
-            self._n = 0
-            if self._total:
-                shared["total"] += self._total
+            # Если file не задан явно — подменяем на null-writer.
+            # Иначе tqdm попытается писать в sys.stderr, который в
+            # PyInstaller --noconsole = None.
+            if kwargs.get("file") is None:
+                kwargs["file"] = _NullWriter()
+            super().__init__(*args, **kwargs)
+            self._is_bytes_bar = _looks_like_bytes_bar(self)
+            if self._is_bytes_bar:
+                shared["byte_bars"].append(self)
 
-        def update(self, n: int = 1) -> None:
-            self._n += n
-            shared["done"] += n
-            _emit()
+        def update(self, n: int = 1):
+            displayed = super().update(n)
+            if getattr(self, "_is_bytes_bar", False):
+                shared["done"] += n
+                # Форсим финальный кадр при достижении 100%: hub не закрывает
+                # байтовый бар (после thread_map только set_description), а
+                # последние .update могут попасть в окно троттла 0.3с — тогда
+                # без форса бар застрянет ниже 100% на быстрой/кэшированной
+                # загрузке.
+                total = _byte_total()
+                force = bool(total) and shared["done"] >= total
+                _emit(force=force)
+            return displayed
 
         def close(self) -> None:
-            # Если total был неизвестен — финальный n идёт в done как факт.
-            _emit(force=True)
+            if getattr(self, "_is_bytes_bar", False):
+                _emit(force=True)
+            super().close()
 
-        def set_description(self, *_a, **_kw) -> None:
-            pass
-
-        def set_postfix(self, *_a, **_kw) -> None:
-            pass
-
-        def refresh(self, *_a, **_kw) -> None:
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc) -> None:
-            self.close()
-
-        def __iter__(self):
-            return iter([])
-
-        @property
-        def n(self) -> int:
-            return self._n
-
-        @n.setter
-        def n(self, value: int) -> None:
-            delta = value - self._n
-            self._n = value
-            shared["done"] += delta
-            _emit()
+        def display(self, *args, **kwargs):
+            # Подавляем рендер — у нас собственный UI-прогресс.
+            return True
 
     return _ProgressTqdm
