@@ -233,7 +233,10 @@ def _format_message(msg: ExportMessage, s: MarkdownSettings) -> str:
         body = f"↪ ответ на сообщение #{msg.reply_to_message_id}\n{body}"
 
     if msg.transcription:
-        extras.append(f"Транскрипция: {msg.transcription}")
+        # Помечаем распознанный из голоса/видео текст: он сгенерирован
+        # автоматически (Whisper/Deepgram) и может содержать ошибки —
+        # пользователю важно отличать его от написанного человеком.
+        extras.append(f"🎤 *Расшифровка голосового:* {msg.transcription}")
 
     combined = "\n\n".join([body, *extras]).strip()
     if header:

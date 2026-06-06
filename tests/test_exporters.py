@@ -202,7 +202,10 @@ class TestMarkdownExporter(unittest.TestCase):
         s = MarkdownSettings(include_timestamps=False, include_author=False)
         msg = _msg(text="", transcription="Привет мир")
         result = self._fmt(msg, s)
-        self.assertIn("Транскрипция", result)
+        # Распознанный текст помечается 🎤 + курсивом, чтобы отличать его
+        # от написанного человеком (может содержать ошибки распознавания).
+        self.assertIn("🎤", result)
+        self.assertIn("*Расшифровка голосового:*", result)
         self.assertIn("Привет мир", result)
 
     # --- Exporter integration ---
