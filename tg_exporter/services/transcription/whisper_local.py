@@ -343,16 +343,44 @@ def _make_progress_tqdm(
         # tqdm (без UI-прогресса, но скачивание будет работать).
         return None
 
-    # Общая статистика между экземплярами tqdm (snapshot_download создаёт их
-    # отдельно для каждого файла).
-    shared = {"total": 0, "done": 0, "last_emit": 0.0}
+    # Общая статистика между экземплярами tqdm. В huggingface_hub >= 1.15.0
+    # snapshot_download создаёт нашим tqdm_class ДВА вида баров:
+    #   * байтовый родитель `bytes_progress` (unit="B", изначально total=0) —
+    #     его total hub накручивает прямым `bytes_progress.total += size` в
+    #     обход нашего __init__, а .update(n) (n — байты) идёт через наш update;
+    #   * служебный счётчик ФАЙЛОВ из thread_map (unit="it", total = число
+    #     файлов, 1–4), который тикает по +1 на завершённый файл.
+    # Если смешать оба — файловый total (≈4) отравляет байтовый знаменатель и
+    # прогресс застывает на «0 / 0 МБ (100%)». Поэтому учитываем ТОЛЬКО
+    # байтовые бары, а точный знаменатель берём прямо из их .total (который
+    # hub меняет на месте), с откатом на размер модели, пока total ещё 0.
+    shared = {"done": 0, "last_emit": 0.0, "byte_bars": []}
+
+    def _byte_total() -> int:
+        # Сумма актуальных .total всех байтовых баров (hub дописывает их на
+        # месте). 0, пока hub ещё не объявил размеры файлов.
+        return sum(int(getattr(b, "total", 0) or 0) for b in shared["byte_bars"])
+
+    def _looks_like_bytes_bar(bar) -> bool:
+        # Отличаем байтовый бар загрузки от служебного счётчика ФАЙЛОВ.
+        # Не завязываемся на точную строку unit="B" (она не запинена и может
+        # измениться в будущих версиях hub): байтовые бары hub всегда создаёт
+        # с unit_scale=True И единицей, начинающейся на "B" (B/iB), тогда как
+        # файловый счётчик из thread_map идёт с unit="it", unit_scale=False.
+        # Достаточно любого из признаков — это переживёт переименование "B".
+        unit = (getattr(bar, "unit", "") or "")
+        if unit[:1].upper() == "B":
+            return True
+        if getattr(bar, "unit_scale", False) and unit.lower() not in ("it", "items", ""):
+            return True
+        return False
 
     def _emit(force: bool = False) -> None:
         now = time.monotonic()
         if not force and (now - shared["last_emit"]) < 0.3:
             return
         shared["last_emit"] = now
-        total = shared["total"] or (size_mb * 1024 * 1024)
+        total = _byte_total() or (size_mb * 1024 * 1024)
         done = min(shared["done"], total)
         ratio = done / total if total > 0 else 0.0
         mb_done = done / (1024 * 1024)
@@ -375,17 +403,27 @@ def _make_progress_tqdm(
             if kwargs.get("file") is None:
                 kwargs["file"] = _NullWriter()
             super().__init__(*args, **kwargs)
-            if self.total:
-                shared["total"] += self.total
+            self._is_bytes_bar = _looks_like_bytes_bar(self)
+            if self._is_bytes_bar:
+                shared["byte_bars"].append(self)
 
         def update(self, n: int = 1):
             displayed = super().update(n)
-            shared["done"] += n
-            _emit()
+            if getattr(self, "_is_bytes_bar", False):
+                shared["done"] += n
+                # Форсим финальный кадр при достижении 100%: hub не закрывает
+                # байтовый бар (после thread_map только set_description), а
+                # последние .update могут попасть в окно троттла 0.3с — тогда
+                # без форса бар застрянет ниже 100% на быстрой/кэшированной
+                # загрузке.
+                total = _byte_total()
+                force = bool(total) and shared["done"] >= total
+                _emit(force=force)
             return displayed
 
         def close(self) -> None:
-            _emit(force=True)
+            if getattr(self, "_is_bytes_bar", False):
+                _emit(force=True)
             super().close()
 
         def display(self, *args, **kwargs):
