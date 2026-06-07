@@ -249,16 +249,35 @@ class LoginView(ctk.CTkFrame):
 
     def _on_tab_change(self, value: str) -> None:
         """Переключает вкладку «Вход» / «Подключение»."""
+        # Без API-ключей вкладка «Вход» недоступна — возвращаем на «Подключение».
+        # (Защита на случай, если визуальный дизейбл сегмента обойдён.)
+        if value == _TAB_LOGIN and not self._app.has_api_creds():
+            self._tab_var.set(_TAB_CONN)
+            self._show_conn_tab()
+            self.set_error("Сначала настройте подключение (API-ключи).")
+            return
         if value == _TAB_CONN:
-            self._hide_widget(self._login_tab)
-            self._show_widget(self._conn_tab, fill="both", expand=True)
-            self._card.place_configure(relheight=0.86)
+            self._show_conn_tab()
         else:
             self._hide_widget(self._conn_tab)
             self._show_widget(self._login_tab, fill="both", expand=True)
             # Высота зависит от режима входа (QR выше).
             relh = 0.86 if self._mode_var.get() == "QR-код" else 0.74
             self._card.place_configure(relheight=relh)
+
+    def _show_conn_tab(self) -> None:
+        self._hide_widget(self._login_tab)
+        self._show_widget(self._conn_tab, fill="both", expand=True)
+        self._card.place_configure(relheight=0.86)
+
+    def _set_login_tab_enabled(self, enabled: bool) -> None:
+        """Визуально (раз)блокирует сегмент «Вход» в переключателе вкладок."""
+        try:
+            btn = self._tab_seg._buttons_dict.get(_TAB_LOGIN)
+            if btn is not None:
+                btn.configure(state="normal" if enabled else "disabled")
+        except Exception:
+            pass  # внутренности CTk могли измениться — перехват в _on_tab_change страхует
 
     def _switch_tab(self, tab: str) -> None:
         """Программно активирует вкладку (обновляет переменную + раскладку)."""
@@ -301,15 +320,20 @@ class LoginView(ctk.CTkFrame):
             self._api_lbl.configure(text="✓ настроены", text_color=C["success"])
             self._phone_entry.configure(state="normal")
             self._action_btn.configure(state="normal")
+            self._set_login_tab_enabled(True)
             # По умолчанию — вкладка «Вход».
             if self._tab_var.get() != _TAB_LOGIN:
                 self._switch_tab(_TAB_LOGIN)
         else:
-            # Без ключей вход невозможен — открываем вкладку «Подключение».
+            # Без ключей вход невозможен — блокируем вкладку «Вход» и открываем
+            # «Подключение», чтобы пользователь сразу ввёл ключи.
             self._api_lbl.configure(text="не заданы", text_color=C["error"])
             self._phone_entry.configure(state="disabled")
             self._action_btn.configure(state="disabled")
+            # Сначала уводим на «Подключение», ПОТОМ дизейблим «Вход»
+            # (дизейбл активного сегмента визуально некорректен).
             self._switch_tab(_TAB_CONN)
+            self._set_login_tab_enabled(False)
         self.clear_error()
 
     def show_code_input(self) -> None:
