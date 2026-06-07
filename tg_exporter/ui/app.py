@@ -581,6 +581,10 @@ class App(ctk.CTk):
         """Поллит poll_qr, пока активен QR-режим. Эмитит события по результату."""
         while self._qr_active:
             result = self._auth.poll_qr(timeout=5)
+            # Пользователь мог уйти с QR-режима, пока мы блокировались в wait(5).
+            # Не эмитим устаревшие события (включая ложную навигацию на чаты).
+            if not self._qr_active:
+                return
             if result.step == AuthStep.SUCCESS:
                 self._qr_active = False
                 self._worker.put_event("login_success", None)

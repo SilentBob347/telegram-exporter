@@ -13,24 +13,39 @@ from unittest import mock
 
 
 class _FakeQR:
-    """Замена telethon QRLogin."""
+    """
+    Замена telethon QRLogin. ВАЖНО: wait/recreate — КОРУТИНЫ (async), как в
+    реальном telethon (они НЕ синкифицированы). Это ловит баг, когда poll_qr
+    забывает run_until_complete и получает всегда-truthy корутину.
+    """
     def __init__(self, url="tg://login?token=abc", expires=None, wait_behavior=None):
         self.url = url
         self.expires = expires
-        self._wait_behavior = wait_behavior  # callable(timeout) или исключение
+        self._wait_behavior = wait_behavior  # значение-результат или Exception
+        self.recreated = False
 
-    def wait(self, timeout=None):
+    async def wait(self, timeout=None):
         b = self._wait_behavior
-        if isinstance(b, Exception):
+        if isinstance(b, BaseException):
             raise b
-        if callable(b):
-            return b(timeout)
-        return b  # обычно True (вошёл) или None/False
+        return b  # True (вошёл) / False / None
+
+    async def recreate(self):
+        self.recreated = True
+        self.url = "tg://login?token=NEW"
+
+
+class _FakeLoop:
+    """Минимальный loop: реально выполняет корутину (как client.loop)."""
+    def run_until_complete(self, coro):
+        import asyncio
+        return asyncio.new_event_loop().run_until_complete(coro)
 
 
 class _FakeClient:
     def __init__(self, qr):
         self._qr = qr
+        self.loop = _FakeLoop()
 
     def qr_login(self):
         return self._qr
@@ -41,6 +56,9 @@ class _FakeClientMgr:
         self._client = client
 
     def ensure_connected(self):
+        return self._client
+
+    def get_client(self):
         return self._client
 
     def save_session(self):
@@ -69,6 +87,15 @@ class TestAuthQR(unittest.TestCase):
         svc = self._service(qr)
         url = svc.start_qr()
         self.assertEqual(url, "tg://login?token=XYZ")
+
+    def test_recreate_qr_awaits_and_returns_new_url(self):
+        # recreate() должен реально выполниться (корутина), url обновиться.
+        qr = _FakeQR(url="tg://login?token=OLD", expires=_future())
+        svc = self._service(qr)
+        svc.start_qr()
+        new_url = svc.recreate_qr()
+        self.assertTrue(qr.recreated, "recreate() не была выполнена")
+        self.assertEqual(new_url, "tg://login?token=NEW")
 
     def test_poll_success(self):
         qr = _FakeQR(expires=_future(), wait_behavior=True)  # вошёл

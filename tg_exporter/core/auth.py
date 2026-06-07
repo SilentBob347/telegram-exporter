@@ -202,7 +202,11 @@ class AuthService:
         """Пересоздаёт истёкший QR-токен (кнопка «Обновить»). Возвращает новый URL."""
         if self._qr is None:
             return self.start_qr()
-        self._qr.recreate()
+        # QRLogin.recreate — async-метод, НЕ синкифицирован telethon.sync
+        # (в отличие от TelegramClient). Гоним корутину на loop клиента,
+        # иначе recreate() не выполнится и .url вернёт старый (истёкший) токен.
+        c = self._client.ensure_connected()
+        c.loop.run_until_complete(self._qr.recreate())
         return self._qr.url
 
     def poll_qr(self, timeout: float = 5) -> AuthResult:
@@ -222,13 +226,19 @@ class AuthService:
         if self._qr is None:
             return AuthResult.error("QR-вход не запущен.")
         try:
-            result = self._qr.wait(timeout=timeout)
-            # wait вернул истинное значение → вошли.
+            # QRLogin.wait — async-метод, НЕ синкифицирован telethon.sync
+            # (в отличие от TelegramClient). БЕЗ run_until_complete вернётся
+            # корутина (всегда truthy) → ложный SUCCESS без сканирования.
+            # На успех wait() возвращает User; на таймаут бросает
+            # asyncio.TimeoutError; при 2FA — SessionPasswordNeededError.
+            c = self._client.ensure_connected()
+            result = c.loop.run_until_complete(self._qr.wait(timeout=timeout))
             if result:
                 self._client.save_session()
                 self._qr = None
                 return AuthResult.ok()
-            # Вернул без логина → проверяем срок токена.
+            # На практике сюда не попадаем (wait либо вернёт User, либо бросит),
+            # но на всякий случай — проверка срока токена.
             return self._waiting_or_expired()
         except SessionPasswordNeededError:
             # 2FA: дальше пароль через verify_password().
