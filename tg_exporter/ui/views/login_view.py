@@ -50,7 +50,9 @@ class LoginView(ctk.CTkFrame):
             border_width=1,
             border_color=C["border"],
         )
-        self._card.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.42, relheight=0.74)
+        # Высота фиксирована — вмещает обе вкладки, ввод кода и QR-картинку.
+        # Не меняем при переключении вкладок/режимов, чтобы не было «прыжка».
+        self._card.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.42, relheight=0.84)
 
         pad = SPACING["3xl"]
 
@@ -79,15 +81,23 @@ class LoginView(ctk.CTkFrame):
         )
         self._tab_seg.pack(padx=pad, pady=(0, SPACING["md"]))
 
-        # Контейнеры вкладок (одна показана за раз)
-        self._login_tab = ctk.CTkFrame(self._card, fg_color="transparent")
-        self._conn_tab = ctk.CTkFrame(self._card, fg_color="transparent")
+        # Контейнер вкладок: оба фрейма в ОДНОЙ grid-ячейке (оверлап),
+        # переключение через tkraise() — без pack/forget, без моргания.
+        self._tabs_holder = ctk.CTkFrame(self._card, fg_color="transparent")
+        self._tabs_holder.pack(fill="both", expand=True)
+        self._tabs_holder.grid_rowconfigure(0, weight=1)
+        self._tabs_holder.grid_columnconfigure(0, weight=1)
+
+        self._login_tab = ctk.CTkFrame(self._tabs_holder, fg_color="transparent")
+        self._conn_tab = ctk.CTkFrame(self._tabs_holder, fg_color="transparent")
+        self._login_tab.grid(row=0, column=0, sticky="nsew")
+        self._conn_tab.grid(row=0, column=0, sticky="nsew")
 
         self._build_login_tab(pad)
         self._build_conn_tab(pad)
 
         # По умолчанию активна вкладка «Вход» (refresh_state может переключить).
-        self._login_tab.pack(fill="both", expand=True)
+        self._login_tab.tkraise()
 
     def _build_login_tab(self, pad: int) -> None:
         """Вкладка «Вход»: выбор режима + поля телефона/кода/2FA + QR."""
@@ -270,17 +280,12 @@ class LoginView(ctk.CTkFrame):
         if value == _TAB_CONN:
             self._show_conn_tab()
         else:
-            # Сначала показываем новый фрейм, ПОТОМ прячем старый — иначе между
-            # hide и show есть пустой кадр (моргание). Высоту меняем заранее.
-            relh = 0.86 if self._mode_var.get() == "QR-код" else 0.74
-            self._card.place_configure(relheight=relh)
-            self._show_widget(self._login_tab, fill="both", expand=True)
-            self._hide_widget(self._conn_tab)
+            # tkraise — без перепаковки, без моргания. Высота карточки фиксирована
+            # (см. _build), поэтому смены relheight (прыжка) нет.
+            self._login_tab.tkraise()
 
     def _show_conn_tab(self) -> None:
-        self._card.place_configure(relheight=0.86)
-        self._show_widget(self._conn_tab, fill="both", expand=True)
-        self._hide_widget(self._login_tab)
+        self._conn_tab.tkraise()
 
     def _set_login_tab_enabled(self, enabled: bool) -> None:
         """Визуально (раз)блокирует сегмент «Вход» в переключателе вкладок."""
@@ -358,7 +363,6 @@ class LoginView(ctk.CTkFrame):
                           pady=(0, SPACING["xs"]), before=self._error_lbl)
         self._action_btn.set_idle_text("Войти")
         self._action_btn.set_loading(False)
-        self._card.place_configure(relheight=0.82)
         self._code_entry.focus()
 
     def set_loading(self, loading: bool) -> None:
@@ -461,7 +465,6 @@ class LoginView(ctk.CTkFrame):
             self._qr_status.configure(text="Запрашиваю код…", text_color=C["text_sec"])
             self._show_widget(self._qr_frame, pady=(0, SPACING["md"]),
                               before=self._error_lbl)
-            self._card.place_configure(relheight=0.86)
             self._app.start_qr_login()
         else:
             # Возврат в режим входа по номеру.
@@ -483,7 +486,6 @@ class LoginView(ctk.CTkFrame):
                               pady=(0, SPACING["lg"]))
             self._action_btn.set_idle_text("Получить код")
             self.refresh_state()
-            self._card.place_configure(relheight=0.74)
 
     def _on_qr_2fa_submit(self) -> None:
         self.clear_error()
