@@ -14,6 +14,22 @@ if TYPE_CHECKING:
     from ..app import App
 
 
+def _mask_phone(phone: str) -> str:
+    """
+    Маскирует номер для отображения: +7 905 ***-**-67.
+    Видны код страны+оператора и последние 2 цифры — понять «что за аккаунт»,
+    но не светить весь номер. Country-agnostic (работает для любой страны).
+    """
+    p = (phone or "").strip()
+    digits = "".join(c for c in p if c.isdigit())
+    if len(digits) < 7:
+        return p  # слишком короткий — как есть
+    plus = "+" if p.startswith("+") else ""
+    head = digits[:4]
+    tail = digits[-2:]
+    return f"{plus}{head[:1]} {head[1:4]} ***-**-{tail}"
+
+
 class AccountsPage(ctk.CTkFrame):
     def __init__(self, master, app: "App") -> None:
         super().__init__(master, fg_color="transparent")
@@ -57,10 +73,19 @@ class AccountsPage(ctk.CTkFrame):
         card.pack(fill="x", pady=(0, SPACING["sm"]))
         inner = ctk.CTkFrame(card, fg_color="transparent")
         inner.pack(fill="x", padx=SPACING["lg"], pady=SPACING["md"])
+
+        # Слева — имя + маскированный номер (понять, что за аккаунт).
+        meta = ctk.CTkFrame(inner, fg_color="transparent")
+        meta.pack(side="left", fill="x", expand=True)
         name = (profile.display_name or profile.phone or "").strip() or profile.phone
         title = name + ("   ● активный" if is_active else "")
-        ctk.CTkLabel(inner, text=title, font=font(14, "bold"),
-                     text_color=C["text"], anchor="w").pack(side="left")
+        ctk.CTkLabel(meta, text=title, font=font(14, "bold"),
+                     text_color=C["text"], anchor="w").pack(fill="x")
+        masked = _mask_phone(profile.phone)
+        if masked and masked != name:
+            ctk.CTkLabel(meta, text=masked, font=font(11),
+                         text_color=C["text_sec"], anchor="w").pack(fill="x")
+
         proxy_mark = " ✓" if (self._app._profiles.load_proxy(profile) or "").strip() else ""
         AppButton(inner, text="Удалить", variant="ghost", size="sm",
                   command=lambda ph=profile.phone: self._remove(ph)).pack(side="right")

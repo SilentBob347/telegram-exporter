@@ -270,16 +270,17 @@ class LoginView(ctk.CTkFrame):
         if value == _TAB_CONN:
             self._show_conn_tab()
         else:
-            self._hide_widget(self._conn_tab)
-            self._show_widget(self._login_tab, fill="both", expand=True)
-            # Высота зависит от режима входа (QR выше).
+            # Сначала показываем новый фрейм, ПОТОМ прячем старый — иначе между
+            # hide и show есть пустой кадр (моргание). Высоту меняем заранее.
             relh = 0.86 if self._mode_var.get() == "QR-код" else 0.74
             self._card.place_configure(relheight=relh)
+            self._show_widget(self._login_tab, fill="both", expand=True)
+            self._hide_widget(self._conn_tab)
 
     def _show_conn_tab(self) -> None:
-        self._hide_widget(self._login_tab)
-        self._show_widget(self._conn_tab, fill="both", expand=True)
         self._card.place_configure(relheight=0.86)
+        self._show_widget(self._conn_tab, fill="both", expand=True)
+        self._hide_widget(self._login_tab)
 
     def _set_login_tab_enabled(self, enabled: bool) -> None:
         """Визуально (раз)блокирует сегмент «Вход» в переключателе вкладок."""
