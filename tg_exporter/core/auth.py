@@ -24,6 +24,7 @@ from telethon.errors import (
     AuthKeyInvalidError,
     AuthKeyUnregisteredError,
     SendCodeUnavailableError,
+    AuthRestartError,
 )
 
 from .client import TelegramClientManager
@@ -193,10 +194,22 @@ class AuthService:
         """
         Запускает QR-логин: создаёт QRLogin и возвращает его URL (содержимое
         для отрисовки в QR-код). Дальше — poll_qr() в цикле.
+
+        Telegram при первом ExportLoginTokenRequest иногда отвечает
+        AuthRestartError — по протоколу нужно перезапросить токен (qr_login
+        заново). Делаем до 3 попыток.
         """
         c = self._client.ensure_connected()
-        self._qr = c.qr_login()
-        return self._qr.url
+        last_exc = None
+        for _ in range(3):
+            try:
+                self._qr = c.qr_login()
+                return self._qr.url
+            except AuthRestartError as exc:
+                last_exc = exc
+                continue
+        # Если все попытки дали AuthRestartError — пробрасываем (обработает caller).
+        raise last_exc if last_exc else RuntimeError("qr_login failed")
 
     def recreate_qr(self) -> str:
         """Пересоздаёт истёкший QR-токен (кнопка «Обновить»). Возвращает новый URL."""
@@ -206,8 +219,13 @@ class AuthService:
         # (в отличие от TelegramClient). Гоним корутину на loop клиента,
         # иначе recreate() не выполнится и .url вернёт старый (истёкший) токен.
         c = self._client.ensure_connected()
-        c.loop.run_until_complete(self._qr.recreate())
-        return self._qr.url
+        try:
+            c.loop.run_until_complete(self._qr.recreate())
+            return self._qr.url
+        except AuthRestartError:
+            # Перезапрос токена с нуля (qr_login заново, с retry).
+            self._qr = None
+            return self.start_qr()
 
     def poll_qr(self, timeout: float = 5) -> AuthResult:
         """
@@ -243,6 +261,10 @@ class AuthService:
         except SessionPasswordNeededError:
             # 2FA: дальше пароль через verify_password().
             return AuthResult.password_required()
+        except AuthRestartError:
+            # Telegram просит перезапустить QR-токен → как «истёк»: пользователь
+            # нажмёт «Обновить» (recreate_qr пересоздаст токен).
+            return AuthResult.expired()
         except asyncio.TimeoutError:
             # Никто не отсканировал за timeout — нормально, ждём дальше.
             return self._waiting_or_expired()

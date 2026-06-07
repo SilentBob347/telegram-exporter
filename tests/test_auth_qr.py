@@ -43,11 +43,18 @@ class _FakeLoop:
 
 
 class _FakeClient:
-    def __init__(self, qr):
+    def __init__(self, qr, qr_login_errors=0):
         self._qr = qr
         self.loop = _FakeLoop()
+        self._qr_login_errors = qr_login_errors  # сколько раз бросить AuthRestartError
+        self.qr_login_calls = 0
 
     def qr_login(self):
+        self.qr_login_calls += 1
+        if self._qr_login_errors > 0:
+            self._qr_login_errors -= 1
+            from telethon.errors import AuthRestartError
+            raise AuthRestartError(request=None)
         return self._qr
 
 
@@ -79,14 +86,28 @@ class TestAuthQR(unittest.TestCase):
         self.AuthService = AuthService
         self.AuthStep = AuthStep
 
-    def _service(self, qr):
-        return self.AuthService(_FakeClientMgr(_FakeClient(qr)))
+    def _service(self, qr, qr_login_errors=0):
+        return self.AuthService(_FakeClientMgr(_FakeClient(qr, qr_login_errors)))
 
     def test_start_qr_returns_url(self):
         qr = _FakeQR(url="tg://login?token=XYZ", expires=_future())
         svc = self._service(qr)
         url = svc.start_qr()
         self.assertEqual(url, "tg://login?token=XYZ")
+
+    def test_start_qr_retries_on_auth_restart(self):
+        # Telegram бросает AuthRestartError на первый qr_login → ретраим.
+        qr = _FakeQR(url="tg://login?token=AFTER_RETRY", expires=_future())
+        svc = self._service(qr, qr_login_errors=1)
+        url = svc.start_qr()
+        self.assertEqual(url, "tg://login?token=AFTER_RETRY")
+
+    def test_start_qr_gives_up_after_3_auth_restart(self):
+        from telethon.errors import AuthRestartError
+        qr = _FakeQR(expires=_future())
+        svc = self._service(qr, qr_login_errors=5)  # всегда падает
+        with self.assertRaises(AuthRestartError):
+            svc.start_qr()
 
     def test_recreate_qr_awaits_and_returns_new_url(self):
         # recreate() должен реально выполниться (корутина), url обновиться.
