@@ -278,9 +278,11 @@ class LoginView(ctk.CTkFrame):
             self._api_id_entry.clear()
             self._api_hash_entry.clear()
 
+        # ВАЖНО: значения вкладок НЕ меняем динамически (метка приходит в
+        # command _on_tab_change как value — добавление «✓» к тексту сломало бы
+        # сравнение value == _TAB_CONN, и вкладка «Подключение» не открывалась бы).
+        # Статус «ключи заданы» показываем через _api_lbl на самой вкладке.
         if has_creds:
-            # Ключи есть — отмечаем вкладку «Подключение» галочкой, вход доступен.
-            self._tab_seg.configure(values=[_TAB_LOGIN, f"{_TAB_CONN} ✓"])
             self._api_lbl.configure(text="API ключи настроены ✓", text_color=C["success"])
             self._phone_entry.configure(state="normal")
             self._action_btn.configure(state="normal")
@@ -289,7 +291,6 @@ class LoginView(ctk.CTkFrame):
                 self._switch_tab(_TAB_LOGIN)
         else:
             # Без ключей вход невозможен — открываем вкладку «Подключение».
-            self._tab_seg.configure(values=[_TAB_LOGIN, _TAB_CONN])
             self._api_lbl.configure(text="Укажите API ID и API Hash", text_color=C["error"])
             self._phone_entry.configure(state="disabled")
             self._action_btn.configure(state="disabled")
