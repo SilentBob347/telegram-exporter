@@ -165,6 +165,15 @@ class LoginView(ctk.CTkFrame):
 
     # ---- Public API ----
 
+    def reset_to_phone_mode(self) -> None:
+        """
+        Сбрасывает экран входа в режим «По номеру» (вызывать при показе login,
+        напр. после logout из QR-режима — иначе остаётся залипший QR-вид).
+        """
+        if self._mode_var.get() != "По номеру":
+            self._mode_var.set("По номеру")
+            self._on_mode_change("По номеру")
+
     def refresh_state(self) -> None:
         """Вызывается App после изменения config / credentials."""
         has_creds = self._app.has_api_creds()

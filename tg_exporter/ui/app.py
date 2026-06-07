@@ -153,9 +153,12 @@ class App(ctk.CTk):
 
     def show_login(self) -> None:
         # LOGIN-режим: прячем shell, показываем login на всё окно.
+        self._qr_active = False
         self._shell.pack_forget()
         self.login_view.pack(fill="both", expand=True)
         self._current_view = self.login_view
+        # Сброс возможного залипшего QR-режима (напр. после logout из QR).
+        self.login_view.reset_to_phone_mode()
         self.login_view.refresh_state()
         if self.has_api_creds() and self._has_any_session():
             self._worker.submit(self._bg_check_session)
