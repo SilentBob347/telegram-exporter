@@ -13,6 +13,7 @@ import customtkinter as ctk
 from ..theme import C, RADIUS, SPACING, font, font_display
 from ..components.button import AppButton
 from ..components.entry import AppEntry
+from ..components.qr_widget import QRCodeWidget
 
 if TYPE_CHECKING:
     from ..app import App
@@ -56,6 +57,16 @@ class LoginView(ctk.CTkFrame):
             font=font(13),
             text_color=C["text_sec"],
         ).pack(pady=(0, SPACING["xl"]))
+
+        # Переключатель режима входа: по номеру / QR-код
+        self._mode_var = ctk.StringVar(value="По номеру")
+        self._mode_seg = ctk.CTkSegmentedButton(
+            self._card,
+            values=["По номеру", "QR-код"],
+            variable=self._mode_var,
+            command=self._on_mode_change,
+        )
+        self._mode_seg.pack(pady=(0, SPACING["md"]))
 
         # Статус API-ключей
         self._api_lbl = ctk.CTkLabel(
@@ -129,6 +140,29 @@ class LoginView(ctk.CTkFrame):
         )
         self._action_btn.pack(padx=pad, fill="x", pady=(0, SPACING["2xl"]))
 
+        # ---- QR-режим (скрыт по умолчанию, не пакуется) ----
+        self._qr_frame = ctk.CTkFrame(self._card, fg_color="transparent")
+        self._qr_widget = QRCodeWidget(self._qr_frame, size_px=220)
+        self._qr_widget.pack(pady=(0, SPACING["sm"]))
+        self._qr_status = ctk.CTkLabel(
+            self._qr_frame,
+            text="Отсканируйте код в приложении Telegram",
+            font=font(12),
+            text_color=C["text_sec"],
+            wraplength=300,
+        )
+        self._qr_status.pack(pady=(0, SPACING["sm"]))
+        # Кнопка обновления кода — показывается только после истечения/ошибки.
+        self._qr_refresh_btn = AppButton(
+            self._qr_frame, text="Обновить код", variant="secondary", size="sm",
+            command=self._app.refresh_qr,
+        )
+        # Кнопка подтверждения пароля 2FA в QR-режиме — показывается по on_qr_2fa.
+        self._qr_2fa_btn = AppButton(
+            self._qr_frame, text="Войти", size="sm",
+            command=self._on_qr_2fa_submit,
+        )
+
     # ---- Public API ----
 
     def refresh_state(self) -> None:
@@ -187,7 +221,94 @@ class LoginView(ctk.CTkFrame):
     def password(self) -> str:
         return self._pwd_entry.get().strip()
 
+    # ---- QR-события (вызываются App через EventDispatcher) ----
+
+    def on_qr_ready(self, url: str) -> None:
+        """Получен токен входа — рисуем QR и просим отсканировать."""
+        self._qr_widget.set_data(url)
+        self._qr_status.configure(
+            text="Отсканируйте код в приложении Telegram",
+            text_color=C["text_sec"],
+        )
+        self._hide_widget(self._qr_refresh_btn)
+
+    def on_qr_2fa(self) -> None:
+        """QR-вход требует пароль 2FA — показываем поле пароля и кнопку «Войти»."""
+        self._hide_widget(self._qr_refresh_btn)
+        self._qr_status.configure(text="Введите пароль 2FA", text_color=C["text_sec"])
+        # _pwd_frame — ребёнок карточки; показываем его перед строкой ошибки.
+        self._show_widget(self._pwd_frame, padx=SPACING["3xl"], fill="x",
+                          pady=(0, SPACING["sm"]), before=self._error_lbl)
+        # Кнопка «Войти» — ребёнок _qr_frame, под статусом.
+        self._show_widget(self._qr_2fa_btn, pady=(0, SPACING["sm"]))
+        self._pwd_entry.focus()
+
+    def on_qr_expired(self) -> None:
+        """Токен устарел — предлагаем обновить код."""
+        self._qr_status.configure(
+            text="Код устарел. Нажмите «Обновить».",
+            text_color=C["warning"],
+        )
+        self._show_widget(self._qr_refresh_btn, pady=(0, SPACING["sm"]))
+
+    def on_qr_error(self, msg: str) -> None:
+        """Ошибка QR-входа — показываем сообщение и кнопку обновления."""
+        self._qr_status.configure(text=msg, text_color=C["error"])
+        self._show_widget(self._qr_refresh_btn, pady=(0, SPACING["sm"]))
+
     # ---- Handlers ----
+
+    def _on_mode_change(self, value: str) -> None:
+        if value == "QR-код":
+            # QR-вход требует API-кредов (как и вход по номеру).
+            if not self._app.has_api_creds():
+                self.set_error("Сначала укажите API ID и API Hash")
+                self._mode_var.set("По номеру")
+                return
+            # Скрываем виджеты входа по номеру.
+            self._hide_widget(self._phone_entry)
+            self._hide_widget(self._code_entry)
+            self._hide_widget(self._pwd_frame)
+            self._hide_widget(self._action_btn)
+            self._hide_widget(self._clear_api_btn)
+            # Показываем QR-блок.
+            self.clear_error()
+            self._hide_widget(self._qr_refresh_btn)
+            self._hide_widget(self._qr_2fa_btn)
+            self._qr_status.configure(text="Запрашиваю код…", text_color=C["text_sec"])
+            self._show_widget(self._qr_frame, pady=(0, SPACING["md"]),
+                              before=self._error_lbl)
+            self._card.place_configure(relheight=0.86)
+            self._app.start_qr_login()
+        else:
+            # Возврат в режим входа по номеру.
+            self._app.stop_qr_login()
+            self._hide_widget(self._qr_frame)
+            self._hide_widget(self._qr_refresh_btn)
+            self._hide_widget(self._qr_2fa_btn)
+            self._hide_widget(self._pwd_frame)  # мог остаться от QR-2FA
+            self._code_entry.clear()
+            self._pwd_entry.clear()
+            self._qr_widget.clear()
+            self._state = "phone"
+            # Сначала возвращаем поле телефона в packing-порядок (до refresh_state,
+            # который ссылается на него через before=), затем кнопку действия.
+            self._show_widget(self._phone_entry, padx=SPACING["3xl"], fill="x",
+                              pady=(0, SPACING["xs"]), before=self._error_lbl)
+            self._show_widget(self._action_btn, padx=SPACING["3xl"], fill="x",
+                              pady=(0, SPACING["2xl"]))
+            self._action_btn.set_idle_text("Получить код")
+            self.refresh_state()
+            self._card.place_configure(relheight=0.72)
+
+    def _on_qr_2fa_submit(self) -> None:
+        self.clear_error()
+        pwd = self._pwd_entry.get().strip()
+        if not pwd:
+            self._qr_status.configure(text="Введите пароль 2FA", text_color=C["error"])
+            return
+        self._qr_status.configure(text="Проверяю пароль…", text_color=C["text_sec"])
+        self._app.verify_qr_password(pwd)
 
     def _on_action(self) -> None:
         self.clear_error()

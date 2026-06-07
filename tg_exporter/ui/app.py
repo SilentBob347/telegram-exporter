@@ -96,6 +96,8 @@ class App(ctk.CTk):
         # Временный прокси для входа (до создания профиля). Применяется к клиенту
         # на send_code и переносится в профиль после успешного логина.
         self._pending_proxy: str = ""
+        # Активен ли цикл поллинга QR-входа (выключается при уходе с QR-режима).
+        self._qr_active: bool = False
         self._folder_active: bool = False
         self._folder_mode: str = "По чатам"   # "По чатам" | "Один .md на чат" | "Один .md на папку"
         self._folder_transcribe: bool = False
@@ -252,6 +254,26 @@ class App(ctk.CTk):
 
     def logout(self) -> None:
         self._worker.submit(self._bg_logout)
+
+    # ---- QR-вход ----
+
+    def start_qr_login(self) -> None:
+        """Запускает вход по QR: фоновый цикл поллинга + событие qr_ready."""
+        self._qr_active = True
+        self._worker.submit(self._bg_qr_login)
+
+    def stop_qr_login(self) -> None:
+        """Останавливает поллинг QR (при переключении на вход по номеру/уходе)."""
+        self._qr_active = False
+
+    def refresh_qr(self) -> None:
+        """Кнопка «Обновить»: пересоздаёт истёкший QR-токен и продолжает поллинг."""
+        self._qr_active = True
+        self._worker.submit(self._bg_qr_refresh)
+
+    def verify_qr_password(self, password: str) -> None:
+        """Пароль 2FA после сканирования QR."""
+        self._worker.submit(self._bg_qr_password, password)
 
     # ---- Config actions ----
 
@@ -533,7 +555,60 @@ class App(ctk.CTk):
         else:
             self._worker.put_event("login_error", result.error or "Ошибка")
 
+    def _bg_qr_login(self) -> None:
+        """Фоновый цикл QR-входа: показать QR → поллить до входа/2FA/истечения."""
+        try:
+            # Прокси для входа (как и для входа по номеру) — до создания профиля.
+            self._client_mgr.use_proxy(self._pending_proxy)
+            url = self._auth.start_qr()
+            self._worker.put_event("qr_ready", url)
+            self._qr_poll_loop()
+        except Exception as exc:
+            logger.error("qr_login failed", exc=exc)
+            self._worker.put_event("qr_error", str(exc))
+
+    def _bg_qr_refresh(self) -> None:
+        """Пересоздаёт истёкший QR и продолжает поллинг."""
+        try:
+            url = self._auth.recreate_qr()
+            self._worker.put_event("qr_ready", url)
+            self._qr_poll_loop()
+        except Exception as exc:
+            logger.error("qr_refresh failed", exc=exc)
+            self._worker.put_event("qr_error", str(exc))
+
+    def _qr_poll_loop(self) -> None:
+        """Поллит poll_qr, пока активен QR-режим. Эмитит события по результату."""
+        while self._qr_active:
+            result = self._auth.poll_qr(timeout=5)
+            if result.step == AuthStep.SUCCESS:
+                self._qr_active = False
+                self._worker.put_event("login_success", None)
+                return
+            if result.step == AuthStep.PASSWORD_REQUIRED:
+                self._qr_active = False
+                self._worker.put_event("qr_2fa", None)
+                return
+            if result.step == AuthStep.EXPIRED:
+                self._qr_active = False
+                self._worker.put_event("qr_expired", None)
+                return
+            if result.step == AuthStep.ERROR:
+                self._qr_active = False
+                self._worker.put_event("qr_error", result.error or "Ошибка QR-входа")
+                return
+            # WAITING → продолжаем цикл
+
+    def _bg_qr_password(self, password: str) -> None:
+        """Пароль 2FA после QR-сканирования."""
+        result = self._auth.verify_password(password)
+        if result.step == AuthStep.SUCCESS:
+            self._worker.put_event("login_success", None)
+        else:
+            self._worker.put_event("login_error", result.error or "Неверный пароль 2FA")
+
     def _bg_logout(self) -> None:
+        self._qr_active = False
         self._auth.logout()
         if self.config.api_id:
             self.credentials.delete_session(self.config.api_id)
@@ -675,6 +750,10 @@ class App(ctk.CTk):
         d.on("code_sent",        lambda _: self.login_view.show_code_input())
         d.on("login_error",      lambda msg: self.login_view.set_error(msg or "Ошибка"))
         d.on("login_2fa",        lambda _: self.login_view.show_code_input())
+        d.on("qr_ready",         lambda url: self.login_view.on_qr_ready(url))
+        d.on("qr_2fa",           lambda _: self.login_view.on_qr_2fa())
+        d.on("qr_expired",       lambda _: self.login_view.on_qr_expired())
+        d.on("qr_error",         lambda msg: self.login_view.on_qr_error(msg or "Ошибка QR"))
         d.on("logout_done",      lambda _: self.show_login())
         d.on("profile_switched", self._on_profile_switched)
 

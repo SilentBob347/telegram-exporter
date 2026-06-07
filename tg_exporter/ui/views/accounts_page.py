@@ -36,8 +36,8 @@ class AccountsPage(ctk.CTkFrame):
         actions.pack(fill="x", padx=pad, pady=(0, pad))
         AppButton(actions, text="+ Добавить аккаунт", variant="primary",
                   command=self._app.show_add_account).pack(side="left")
-        AppButton(actions, text="📷 Войти по QR-коду", variant="secondary",
-                  command=self._app.show_add_account).pack(side="left", padx=(SPACING["sm"], 0))
+        # Вход по QR — на экране входа (переключатель «По номеру / QR»),
+        # для первичного логина. Здесь, при добавлении аккаунта, его нет (спек §13).
         self._render_cards()
 
     def _render_cards(self) -> None:
