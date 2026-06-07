@@ -116,13 +116,37 @@ def _looks_like_hex(s: str) -> bool:
 
 
 def _validate_mtproto_secret(secret: str) -> str:
-    """MTProto-секрет: hex (опц. с префиксом dd/ee) либо url-safe base64."""
+    """
+    MTProto-секрет: hex (16 байт, опц. dd+16=17 байт) либо base64.
+
+    Особенность Telethon 1.43 (`normalize_secret` в tcpmtproxy.py): он срезает
+    ЛЮБОЙ hex-секрет, начинающийся на строку "ee"/"dd", как 1-байтовый префикс.
+    Для ровно 16-байтного (32 hex) секрета, первый байт которого 0xEE или 0xDD,
+    это даёт 15 байт → telethon падает с «secret must be 16 bytes». Такие
+    секреты (часто fake-TLS `ee...`) отбраковываем заранее с понятным текстом,
+    а не отдаём в telethon на криптическую ошибку при входе.
+    """
     import base64
 
-    raw = secret
-    # Префиксы dd (secure) / ee (fake-TLS) — это часть hex-секрета, оставляем как есть.
-    if _looks_like_hex(raw) and len(raw) % 2 == 0 and len(raw) >= 32:
-        return raw
+    raw = secret.strip()
+
+    if _looks_like_hex(raw) and len(raw) % 2 == 0:
+        nbytes = len(raw) // 2
+        prefix = raw[:2].lower()
+        # Ровно 16 байт hex, начинается на ee/dd: telethon в hex-форме сломается
+        # (срежет ee/dd как строковый префикс → 15 байт → ValueError). НО тот же
+        # секрет в base64 telethon принимает корректно. Конвертируем сами, чтобы
+        # пользователь вставлял hex из tg://proxy ссылки как есть.
+        if nbytes == 16 and prefix in ("ee", "dd"):
+            return base64.b64encode(bytes.fromhex(raw)).decode().rstrip("=")
+        # Валидные hex: 16 байт без ee/dd-префикса, либо 17 байт (dd + 16),
+        # либо длиннее (fake-TLS с доменом — telethon обрежет до 16).
+        if nbytes >= 16:
+            return raw
+        raise ProxyValidationError(
+            "Слишком короткий секрет MTProto: нужно минимум 16 байт (32 hex-символа)."
+        )
+
     # base64-форма (telegram ссылки иногда дают base64url)
     try:
         pad = "=" * (-len(raw) % 4)
@@ -132,7 +156,7 @@ def _validate_mtproto_secret(secret: str) -> str:
     except (ValueError, TypeError):  # невалидный base64 → секрет некорректен
         pass
     raise ProxyValidationError(
-        "Некорректный секрет MTProto: ожидается hex (≥32 символов) или base64."
+        "Некорректный секрет MTProto: ожидается hex (16 байт / 32 символа) или base64."
     )
 
 
@@ -218,7 +242,10 @@ def build_proxy_url(
     host = _bracket_ipv6((host or "").strip())
     port = (port or "").strip()
     if kind == "mtproto":
-        return f"mtproto://{host}:{port}?secret={(secret or '').strip()}"
+        # Секрет может быть base64 с '+' и '/'. В URL query '+' декодируется как
+        # пробел, поэтому percent-кодируем секрет целиком (quote с safe="").
+        secret_enc = quote((secret or "").strip(), safe="")
+        return f"mtproto://{host}:{port}?secret={secret_enc}"
     auth = ""
     username = (username or "").strip()
     password = (password or "").strip()

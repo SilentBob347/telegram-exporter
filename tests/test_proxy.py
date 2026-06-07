@@ -123,6 +123,51 @@ class TestParseProxy(unittest.TestCase):
         with self.assertRaises(self.ProxyValidationError):
             self.parse_proxy("mtproto://1.2.3.4:443?secret=zzzz")
 
+    def test_mtproto_ee_hex_secret_converted_to_base64(self):
+        # 16-байтный hex-секрет на ee — telethon 1.43 ломает hex-форму (срезает
+        # ee → 15 байт), НО принимает тот же секрет в base64. Конвертируем сами,
+        # чтобы пользователь вставлял hex из tg://proxy ссылки как есть.
+        import base64
+        hexs = "ee79612e7275634723334fdef3d1bc8b"
+        cfg = self.parse_proxy(f"mtproto://1.2.3.4:443?secret={hexs}")
+        self.assertEqual(cfg.kind, "mtproto")
+        # секрет должен стать base64 этих же 16 байт
+        expected = base64.b64encode(bytes.fromhex(hexs)).decode().rstrip("=")
+        self.assertEqual(cfg.secret, expected)
+
+    def test_mtproto_dd_hex_16byte_converted_to_base64(self):
+        # dd + ровно 16 байт (32 hex) — та же проблема, та же конверсия.
+        import base64
+        hexs = "dd79612e7275634723334fdef3d1bc8b"
+        cfg = self.parse_proxy(f"mtproto://1.2.3.4:443?secret={hexs}")
+        expected = base64.b64encode(bytes.fromhex(hexs)).decode().rstrip("=")
+        self.assertEqual(cfg.secret, expected)
+
+    def test_mtproto_base64_secret_with_plus_roundtrip(self):
+        # base64-секрет с '+' (standard b64) не должен ломаться в URL round-trip:
+        # parse_qs декодирует '+' как пробел, поэтому to_url обязан его кодировать.
+        # ee-секрет 0xee + 15×0x3e даёт base64 с '+'.
+        hexs = "ee3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e"
+        cfg = self.parse_proxy(f"mtproto://1.2.3.4:443?secret={hexs}")
+        self.assertIn("+", cfg.secret)  # убедимся, что кейс с '+' реально воспроизводится
+        # round-trip через to_url не должен потерять '+'
+        cfg2 = self.parse_proxy(cfg.to_url())
+        self.assertEqual(cfg.secret, cfg2.secret)
+
+    def test_mtproto_dd_secret_17bytes_ok(self):
+        # dd + 16 байт ключа = 17 байт (34 hex) — валидный dd-секрет, telethon ОК.
+        cfg = self.parse_proxy(
+            "mtproto://1.2.3.4:443?secret=dd0123456789abcdef0123456789abcdef"
+        )
+        self.assertEqual(cfg.kind, "mtproto")
+
+    def test_mtproto_plain_16byte_secret_ok(self):
+        # обычный 16-байтный hex (не начинается на ee/dd) — telethon ОК.
+        cfg = self.parse_proxy(
+            "mtproto://1.2.3.4:443?secret=0123456789abcdef0123456789abcdef"
+        )
+        self.assertEqual(cfg.kind, "mtproto")
+
 
 class TestToTelethon(unittest.TestCase):
     def setUp(self):
