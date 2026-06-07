@@ -122,6 +122,10 @@ class App(ctk.CTk):
         self.sidebar.pack(side="left", fill="y")
         self._page_container = ctk.CTkFrame(self._shell, fg_color="transparent")
         self._page_container.pack(side="left", fill="both", expand=True)
+        # Все страницы — в ОДНОЙ grid-ячейке (оверлап). Переключение через
+        # tkraise() мгновенно, без pack/forget (перепаковка = видимая задержка).
+        self._page_container.grid_rowconfigure(0, weight=1)
+        self._page_container.grid_columnconfigure(0, weight=1)
 
         self.chats_page = ChatsPage(self._page_container, self)
         self.accounts_page = AccountsPage(self._page_container, self)
@@ -131,6 +135,8 @@ class App(ctk.CTk):
             "chats": self.chats_page, "accounts": self.accounts_page,
             "settings": self.settings_page, "help": self.help_page,
         }
+        for page in self._pages.values():
+            page.grid(row=0, column=0, sticky="nsew")
         self._current_page = None
         self._current_view = None
 
@@ -181,14 +187,14 @@ class App(ctk.CTk):
         page = self._pages.get(name)
         if page is None:
             return
-        if self._current_page is not None:
-            self._current_page.pack_forget()
-        page.pack(fill="both", expand=True)
+        # tkraise — мгновенно, без перепаковки (страница уже в grid-ячейке).
+        page.tkraise()
         self._current_page = page
         self.sidebar.set_active(name)
-        # Обновляем данные страниц, зависящих от состояния, при показе.
+        # Обновление данных — ПОСЛЕ отрисовки (after), чтобы не задерживать
+        # появление страницы (refresh перечитывает config / рисует карточки).
         if name in ("accounts", "settings"):
-            page.refresh()
+            self.after(0, page.refresh)
 
     def show_chats(self) -> None:
         self._show_shell()
