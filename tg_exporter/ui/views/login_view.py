@@ -180,8 +180,12 @@ class LoginView(ctk.CTkFrame):
         if has_creds:
             self._api_lbl.configure(text="API ключи настроены ✓", text_color=C["success"])
             self._settings_btn.configure(text="Изменить API ключи")
-            self._show_widget(self._clear_api_btn, padx=SPACING["3xl"], fill="x",
-                              pady=(0, SPACING["xl"]), before=self._phone_entry)
+            # before=_phone_entry только если он в packing-порядке (в QR-режиме
+            # или когда login скрыт он может быть unpacked → TclError на before=).
+            pk = dict(padx=SPACING["3xl"], fill="x", pady=(0, SPACING["xl"]))
+            if self._phone_entry.winfo_ismapped():
+                pk["before"] = self._phone_entry
+            self._show_widget(self._clear_api_btn, **pk)
             self._phone_entry.configure(state="normal")
             self._action_btn.configure(state="normal")
         else:
