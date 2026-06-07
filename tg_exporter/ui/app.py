@@ -33,7 +33,7 @@ from ..models.config import AppConfig
 from ..models.export_task import ExportTask, ExportProgress, ExportFormat, AuthorFilter
 from ..core.credentials import CredentialsManager
 from ..core.client import TelegramClientManager
-from ..core.auth import AuthService, AuthStep
+from ..core.auth import AuthService, AuthStep, QrNeedsPassword
 from ..core.orchestrator import ExportOrchestrator
 from ..core.profiles import ProfileManager, Profile
 from ..services.export_history import ExportHistory
@@ -566,8 +566,13 @@ class App(ctk.CTk):
             url = self._auth.start_qr()
             self._worker.put_event("qr_ready", url)
             self._qr_poll_loop()
+        except QrNeedsPassword:
+            # 2FA-аккаунт, токен уже отсканирован → сразу поле пароля, без poll.
+            self._qr_active = False
+            self._worker.put_event("qr_2fa", None)
         except Exception as exc:
             logger.error("qr_login failed", exc=exc)
+            self._qr_active = False
             self._worker.put_event("qr_error", str(exc))
 
     def _bg_qr_refresh(self) -> None:
@@ -576,8 +581,12 @@ class App(ctk.CTk):
             url = self._auth.recreate_qr()
             self._worker.put_event("qr_ready", url)
             self._qr_poll_loop()
+        except QrNeedsPassword:
+            self._qr_active = False
+            self._worker.put_event("qr_2fa", None)
         except Exception as exc:
             logger.error("qr_refresh failed", exc=exc)
+            self._qr_active = False
             self._worker.put_event("qr_error", str(exc))
 
     def _qr_poll_loop(self) -> None:
@@ -607,12 +616,15 @@ class App(ctk.CTk):
             # WAITING → продолжаем цикл
 
     def _bg_qr_password(self, password: str) -> None:
-        """Пароль 2FA после QR-сканирования."""
-        result = self._auth.verify_password(password)
+        """Пароль 2FA после QR-сканирования. Неверный пароль — даём повторить."""
+        result = self._auth.verify_qr_password(password)
         if result.step == AuthStep.SUCCESS:
             self._worker.put_event("login_success", None)
+        elif result.step == AuthStep.PASSWORD_REQUIRED:
+            # Неверный/пустой пароль — остаёмся в 2FA, разрешаем повторить.
+            self._worker.put_event("qr_2fa_retry", "Неверный пароль 2FA. Попробуйте ещё раз.")
         else:
-            self._worker.put_event("login_error", result.error or "Неверный пароль 2FA")
+            self._worker.put_event("qr_error", result.error or "Ошибка входа")
 
     def _bg_logout(self) -> None:
         self._qr_active = False
@@ -759,6 +771,7 @@ class App(ctk.CTk):
         d.on("login_2fa",        lambda _: self.login_view.show_code_input())
         d.on("qr_ready",         lambda url: self.login_view.on_qr_ready(url))
         d.on("qr_2fa",           lambda _: self.login_view.on_qr_2fa())
+        d.on("qr_2fa_retry",     lambda msg: self.login_view.on_qr_2fa_retry(msg or "Неверный пароль 2FA"))
         d.on("qr_expired",       lambda _: self.login_view.on_qr_expired())
         d.on("qr_error",         lambda msg: self.login_view.on_qr_error(msg or "Ошибка QR"))
         d.on("logout_done",      lambda _: self.show_login())

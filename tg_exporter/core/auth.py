@@ -31,6 +31,14 @@ from .client import TelegramClientManager
 from ..utils.logger import logger
 
 
+class QrNeedsPassword(Exception):
+    """
+    Внутренний сигнал: QR-токен уже отсканирован на 2FA-аккаунте, Telegram
+    требует пароль СРАЗУ (из qr_login/recreate, до wait). Это НЕ ошибка —
+    нужно показать поле пароля 2FA, а не сообщение об ошибке.
+    """
+
+
 class AuthStep(Enum):
     CODE_SENT = auto()          # код отправлен
     PASSWORD_REQUIRED = auto()  # нужен пароль 2FA
@@ -83,6 +91,7 @@ class AuthService:
         self._phone_number: Optional[str] = None
         self._phone_hash: Optional[str] = None
         self._qr = None  # активный QRLogin (telethon) при входе по QR
+        self._qr_pwd_pending = False  # 2FA-пароль ожидается (QR уже отсканирован)
 
     # ---- Public API ----
 
@@ -188,6 +197,36 @@ class AuthService:
             logger.error("verify_password failed", exc=exc)
             return AuthResult.error(_friendly(exc))
 
+    def verify_qr_password(self, password: str) -> AuthResult:
+        """
+        Пароль 2FA в QR-режиме. Отличие от verify_password: неверный пароль —
+        НЕ терминальная ошибка, а PASSWORD_REQUIRED (остаёмся в 2FA, разрешаем
+        повторить без перезапуска QR). ensure_connected — сокет мог упасть
+        после 2FA-ошибки.
+        """
+        password = (password or "").strip()
+        if not password:
+            return AuthResult.error("Нужен пароль 2FA.")
+        try:
+            c = self._client.ensure_connected()
+            c.sign_in(password=password)
+            self._client.save_session()
+            self._qr = None
+            self._qr_pwd_pending = False
+            return AuthResult.ok()
+        except PasswordHashInvalidError:
+            # Остаёмся в 2FA — пользователь повторяет, без нового QR.
+            self._qr_pwd_pending = True
+            return AuthResult.password_required()
+        except SessionPasswordNeededError:
+            self._qr_pwd_pending = True
+            return AuthResult.password_required()
+        except FloodWaitError as exc:
+            return AuthResult.error(f"Слишком много попыток. Подождите {exc.seconds} сек.")
+        except Exception as exc:
+            logger.error("verify_qr_password failed", exc=exc)
+            return AuthResult.error(_friendly(exc))
+
     # ---- QR-вход ----
 
     def start_qr(self) -> str:
@@ -200,6 +239,7 @@ class AuthService:
         заново). Делаем до 3 попыток.
         """
         c = self._client.ensure_connected()
+        self._qr_pwd_pending = False
         last_exc = None
         for _ in range(3):
             try:
@@ -208,22 +248,39 @@ class AuthService:
             except AuthRestartError as exc:
                 last_exc = exc
                 continue
+            except SessionPasswordNeededError:
+                # qr_login() внутри шлёт ExportLoginTokenRequest; на 2FA-аккаунте
+                # с уже отсканированным токеном Telegram сразу требует пароль.
+                # Это НЕ ошибка — сигналим «нужен пароль 2FA».
+                self._qr_pwd_pending = True
+                raise QrNeedsPassword()
         # Если все попытки дали AuthRestartError — пробрасываем (обработает caller).
         raise last_exc if last_exc else RuntimeError("qr_login failed")
 
     def recreate_qr(self) -> str:
         """Пересоздаёт истёкший QR-токен (кнопка «Обновить»). Возвращает новый URL."""
+        c = self._client.ensure_connected()
         if self._qr is None:
             return self.start_qr()
-        # QRLogin.recreate — async-метод, НЕ синкифицирован telethon.sync
-        # (в отличие от TelegramClient). Гоним корутину на loop клиента,
-        # иначе recreate() не выполнится и .url вернёт старый (истёкший) токен.
-        c = self._client.ensure_connected()
+        # Обновление кода отменяет недоделанный 2FA.
+        self._qr_pwd_pending = False
+        # QRLogin.recreate — async-метод, НЕ синкифицирован telethon.sync.
+        # Гоним корутину на loop клиента, иначе .url вернёт старый токен.
         try:
             c.loop.run_until_complete(self._qr.recreate())
             return self._qr.url
         except AuthRestartError:
-            # Перезапрос токена с нуля (qr_login заново, с retry).
+            # Перезапрос токена с нуля.
+            self._qr = None
+            return self.start_qr()
+        except SessionPasswordNeededError:
+            # recreate тоже шлёт ExportLoginTokenRequest → на отсканированном
+            # 2FA-аккаунте даёт пароль.
+            self._qr_pwd_pending = True
+            raise QrNeedsPassword()
+        except ConnectionError:
+            # Стейл QRLogin на мёртвом sender (после 2FA-ошибки клиент отвалился)
+            # → берём свежий токен с нуля.
             self._qr = None
             return self.start_qr()
 
@@ -259,13 +316,19 @@ class AuthService:
             # но на всякий случай — проверка срока токена.
             return self._waiting_or_expired()
         except SessionPasswordNeededError:
-            # 2FA: дальше пароль через verify_password().
+            # 2FA: дальше пароль через verify_qr_password().
             logger.info("poll_qr: 2FA требуется (SessionPasswordNeededError)")
+            self._qr_pwd_pending = True
             return AuthResult.password_required()
         except AuthRestartError:
             # Telegram просит перезапустить QR-токен → как «истёк»: пользователь
             # нажмёт «Обновить» (recreate_qr пересоздаст токен).
             return AuthResult.expired()
+        except ConnectionError:
+            # Соединение прервалось во время ожидания — не терминально, на след.
+            # шаге ensure_connected() переподключит.
+            logger.info("poll_qr: соединение прервано, переподключимся на след. шаге")
+            return AuthResult.waiting()
         except asyncio.TimeoutError:
             # Никто не отсканировал за timeout — нормально, ждём дальше.
             return self._waiting_or_expired()
@@ -309,6 +372,7 @@ class AuthService:
         finally:
             self._client.destroy()
             self._qr = None
+            self._qr_pwd_pending = False
             self._phone_number = None
             self._phone_hash = None
 

@@ -43,11 +43,14 @@ class _FakeLoop:
 
 
 class _FakeClient:
-    def __init__(self, qr, qr_login_errors=0):
+    def __init__(self, qr, qr_login_errors=0, qr_login_raises=None, sign_in_raises=None):
         self._qr = qr
         self.loop = _FakeLoop()
         self._qr_login_errors = qr_login_errors  # сколько раз бросить AuthRestartError
+        self._qr_login_raises = qr_login_raises   # исключение из qr_login (напр. 2FA)
+        self._sign_in_raises = sign_in_raises     # исключение из sign_in (напр. неверный пароль)
         self.qr_login_calls = 0
+        self.sign_in_calls = 0
 
     def qr_login(self):
         self.qr_login_calls += 1
@@ -55,7 +58,19 @@ class _FakeClient:
             self._qr_login_errors -= 1
             from telethon.errors import AuthRestartError
             raise AuthRestartError(request=None)
+        if self._qr_login_raises is not None:
+            exc = self._qr_login_raises
+            self._qr_login_raises = None  # бросаем один раз
+            raise exc
         return self._qr
+
+    def sign_in(self, password=None):
+        self.sign_in_calls += 1
+        if self._sign_in_raises is not None:
+            exc = self._sign_in_raises
+            self._sign_in_raises = None  # один раз (повтор пройдёт)
+            raise exc
+        return object()  # User
 
 
 class _FakeClientMgr:
@@ -86,8 +101,11 @@ class TestAuthQR(unittest.TestCase):
         self.AuthService = AuthService
         self.AuthStep = AuthStep
 
-    def _service(self, qr, qr_login_errors=0):
-        return self.AuthService(_FakeClientMgr(_FakeClient(qr, qr_login_errors)))
+    def _service(self, qr, qr_login_errors=0, qr_login_raises=None, sign_in_raises=None):
+        client = _FakeClient(qr, qr_login_errors, qr_login_raises, sign_in_raises)
+        svc = self.AuthService(_FakeClientMgr(client))
+        svc._fake_client = client  # доступ к счётчикам в тестах
+        return svc
 
     def test_start_qr_returns_url(self):
         qr = _FakeQR(url="tg://login?token=XYZ", expires=_future())
@@ -166,6 +184,58 @@ class TestAuthQR(unittest.TestCase):
         svc = self._service(qr)
         res = svc.poll_qr(timeout=1)
         self.assertEqual(res.step, self.AuthStep.ERROR)
+
+    # --- QR + 2FA edge cases (баги из реального лога) ---
+
+    def test_start_qr_2fa_raises_needs_password(self):
+        # 2FA-аккаунт, токен уже отсканирован: qr_login() бросает
+        # SessionPasswordNeededError → start_qr должен поднять QrNeedsPassword
+        # (это не ошибка, а «покажи поле пароля»).
+        from telethon.errors import SessionPasswordNeededError
+        from tg_exporter.core.auth import QrNeedsPassword
+        qr = _FakeQR()
+        svc = self._service(qr, qr_login_raises=SessionPasswordNeededError(request=None))
+        with self.assertRaises(QrNeedsPassword):
+            svc.start_qr()
+
+    def test_verify_qr_password_success(self):
+        qr = _FakeQR(expires=_future())
+        svc = self._service(qr)
+        svc.start_qr()
+        res = svc.verify_qr_password("correct")
+        self.assertEqual(res.step, self.AuthStep.SUCCESS)
+
+    def test_verify_qr_password_wrong_is_retryable(self):
+        # Неверный пароль 2FA — НЕ терминальная ошибка: остаёмся в 2FA (повтор).
+        from telethon.errors import PasswordHashInvalidError
+        qr = _FakeQR(expires=_future())
+        svc = self._service(qr, sign_in_raises=PasswordHashInvalidError(request=None))
+        svc.start_qr()
+        res = svc.verify_qr_password("wrong")
+        self.assertEqual(res.step, self.AuthStep.PASSWORD_REQUIRED)
+        # повтор с верным паролем (sign_in_raises бросает один раз) → успех
+        res2 = svc.verify_qr_password("correct")
+        self.assertEqual(res2.step, self.AuthStep.SUCCESS)
+
+    def test_verify_qr_password_empty(self):
+        qr = _FakeQR(expires=_future())
+        svc = self._service(qr)
+        svc.start_qr()
+        res = svc.verify_qr_password("")
+        self.assertEqual(res.step, self.AuthStep.ERROR)
+
+    def test_recreate_qr_on_connection_error_starts_fresh(self):
+        # recreate на «мёртвом» QR → ConnectionError → берём свежий токен с нуля.
+        class _DeadQR(_FakeQR):
+            async def recreate(self):
+                raise ConnectionError("Cannot send requests while disconnected")
+        dead = _DeadQR(url="tg://login?token=OLD", expires=_future())
+        # после старта _qr=dead; recreate упадёт → start_qr вернёт новый qr.url
+        fresh = _FakeQR(url="tg://login?token=FRESH", expires=_future())
+        svc = self._service(fresh)
+        svc._qr = dead  # имитируем уже запущенный (мёртвый) QR
+        url = svc.recreate_qr()
+        self.assertEqual(url, "tg://login?token=FRESH")
 
 
 if __name__ == "__main__":

@@ -396,6 +396,17 @@ class LoginView(ctk.CTkFrame):
         self._show_widget(self._qr_2fa_btn, pady=(0, SPACING["sm"]))
         self._pwd_entry.focus()
 
+    def on_qr_2fa_retry(self, msg: str) -> None:
+        """Неверный пароль 2FA — остаёмся в поле пароля, даём повторить."""
+        # Поле пароля и кнопка уже показаны (on_qr_2fa); просто сообщаем об
+        # ошибке и чистим ввод для повторной попытки.
+        if not self._pwd_frame.winfo_ismapped():
+            self.on_qr_2fa()
+        self._qr_status.configure(text=msg, text_color=C["error"])
+        self._qr_2fa_btn.set_loading(False)
+        self._pwd_entry.clear()
+        self._pwd_entry.focus()
+
     def on_qr_expired(self) -> None:
         """Токен устарел — предлагаем обновить код."""
         self._qr_status.configure(
