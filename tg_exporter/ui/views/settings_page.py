@@ -84,6 +84,14 @@ class SettingsPage(ctk.CTkFrame):
         # ── Секция Транскрипция ───────────────────────────────────────────
         self._build_transcription_section(s)
 
+        # ── Разделитель ───────────────────────────────────────────────────
+        ctk.CTkFrame(s, height=1, fg_color=C["border"]).pack(
+            fill="x", pady=(SPACING["lg"], SPACING["md"]),
+        )
+
+        # ── Секция Экспорт по умолчанию ───────────────────────────────────
+        self._build_export_section(s)
+
         # ── Низ страницы: статус + Сохранить ──────────────────────────────
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(fill="x", padx=pad, pady=(SPACING["md"], pad))
@@ -183,6 +191,24 @@ class SettingsPage(ctk.CTkFrame):
         )
         self._lang_menu.pack(fill="x", pady=(SPACING["xs"], 0))
 
+    def _build_export_section(self, s) -> None:
+        """Параметры Markdown по умолчанию (автор / временные метки)."""
+        self._section(s, "Экспорт по умолчанию")
+
+        self._row_label(s, "Включать автора сообщения")
+        self._include_author_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            s, text="", variable=self._include_author_var,
+            onvalue=True, offvalue=False,
+        ).pack(anchor="w", pady=(SPACING["xs"], SPACING["sm"]))
+
+        self._row_label(s, "Включать временные метки")
+        self._include_ts_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            s, text="", variable=self._include_ts_var,
+            onvalue=True, offvalue=False,
+        ).pack(anchor="w", pady=(SPACING["xs"], SPACING["sm"]))
+
     # ------------------------------------------------------------------ helpers
 
     def _section(self, parent, text: str) -> None:
@@ -255,6 +281,11 @@ class SettingsPage(ctk.CTkFrame):
         self._lang_var.set(lang)
         self._lang_menu.set(_LANG_LABELS.get(lang, _LANG_LABELS["multi"]))
 
+        # Экспорт по умолчанию (Markdown)
+        md_cfg = cfg.markdown
+        self._include_author_var.set(getattr(md_cfg, "include_author", True))
+        self._include_ts_var.set(getattr(md_cfg, "include_timestamps", True))
+
     def _save(self) -> None:
         import dataclasses
 
@@ -285,7 +316,12 @@ class SettingsPage(ctk.CTkFrame):
 
         lang = self._lang_var.get()
         cfg = self._app.config
-        new_cfg = dataclasses.replace(cfg, transcription_language=lang)
+        md_cfg = dataclasses.replace(
+            cfg.markdown,
+            include_author=self._include_author_var.get(),
+            include_timestamps=self._include_ts_var.get(),
+        )
+        new_cfg = dataclasses.replace(cfg, transcription_language=lang, markdown=md_cfg)
         self._app.config = new_cfg
         new_cfg.save()
 
