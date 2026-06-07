@@ -35,6 +35,8 @@ class AuthStep(Enum):
     PASSWORD_REQUIRED = auto()  # нужен пароль 2FA
     SUCCESS = auto()            # авторизован
     ERROR = auto()
+    WAITING = auto()            # QR ещё не отсканирован (продолжаем поллинг)
+    EXPIRED = auto()            # QR-токен истёк (нужно обновить)
 
 
 @dataclass
@@ -58,6 +60,14 @@ class AuthResult:
     def error(cls, msg: str) -> "AuthResult":
         return cls(step=AuthStep.ERROR, error=msg)
 
+    @classmethod
+    def waiting(cls) -> "AuthResult":
+        return cls(step=AuthStep.WAITING)
+
+    @classmethod
+    def expired(cls) -> "AuthResult":
+        return cls(step=AuthStep.EXPIRED)
+
 
 class AuthService:
     """
@@ -71,6 +81,7 @@ class AuthService:
         self._client = client_manager
         self._phone_number: Optional[str] = None
         self._phone_hash: Optional[str] = None
+        self._qr = None  # активный QRLogin (telethon) при входе по QR
 
     # ---- Public API ----
 
@@ -176,6 +187,77 @@ class AuthService:
             logger.error("verify_password failed", exc=exc)
             return AuthResult.error(_friendly(exc))
 
+    # ---- QR-вход ----
+
+    def start_qr(self) -> str:
+        """
+        Запускает QR-логин: создаёт QRLogin и возвращает его URL (содержимое
+        для отрисовки в QR-код). Дальше — poll_qr() в цикле.
+        """
+        c = self._client.ensure_connected()
+        self._qr = c.qr_login()
+        return self._qr.url
+
+    def recreate_qr(self) -> str:
+        """Пересоздаёт истёкший QR-токен (кнопка «Обновить»). Возвращает новый URL."""
+        if self._qr is None:
+            return self.start_qr()
+        self._qr.recreate()
+        return self._qr.url
+
+    def poll_qr(self, timeout: float = 5) -> AuthResult:
+        """
+        Один шаг ожидания сканирования QR. Вызывать в цикле из фонового потока.
+
+        Возвращает:
+          SUCCESS           — вошёл (сессия сохранена),
+          PASSWORD_REQUIRED — включён 2FA (нужен пароль),
+          EXPIRED           — токен истёк (предложить «Обновить»),
+          WAITING           — ещё не отсканировали (продолжать поллинг),
+          ERROR             — старт не выполнен / иная ошибка.
+        """
+        import asyncio
+        import datetime
+
+        if self._qr is None:
+            return AuthResult.error("QR-вход не запущен.")
+        try:
+            result = self._qr.wait(timeout=timeout)
+            # wait вернул истинное значение → вошли.
+            if result:
+                self._client.save_session()
+                self._qr = None
+                return AuthResult.ok()
+            # Вернул без логина → проверяем срок токена.
+            return self._waiting_or_expired()
+        except SessionPasswordNeededError:
+            # 2FA: дальше пароль через verify_password().
+            return AuthResult.password_required()
+        except asyncio.TimeoutError:
+            # Никто не отсканировал за timeout — нормально, ждём дальше.
+            return self._waiting_or_expired()
+        except FloodWaitError as exc:
+            return AuthResult.error(f"Слишком много запросов. Подождите {exc.seconds} сек.")
+        except Exception as exc:
+            logger.error("poll_qr failed", exc=exc)
+            return AuthResult.error(_friendly(exc))
+
+    def _waiting_or_expired(self) -> AuthResult:
+        """WAITING, пока токен жив; EXPIRED, когда истёк (по qr.expires)."""
+        import datetime
+        expires = getattr(self._qr, "expires", None)
+        if expires is not None:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            # qr.expires — aware datetime в UTC. Сравниваем безопасно.
+            try:
+                if now >= expires:
+                    return AuthResult.expired()
+            except TypeError:
+                # naive datetime — приводим к aware
+                if now.replace(tzinfo=None) >= expires:
+                    return AuthResult.expired()
+        return AuthResult.waiting()
+
     def logout(self) -> None:
 
         """Выходит из аккаунта и уничтожает клиент."""
@@ -186,6 +268,7 @@ class AuthService:
             pass
         finally:
             self._client.destroy()
+            self._qr = None
             self._phone_number = None
             self._phone_hash = None
 
