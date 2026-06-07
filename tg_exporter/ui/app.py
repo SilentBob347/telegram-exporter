@@ -91,6 +91,9 @@ class App(ctk.CTk):
         self._custom_date_from: Optional[datetime.datetime] = None
         self._custom_date_to: Optional[datetime.datetime] = None
         self._active_export_modal: Optional[ExportModal] = None
+        # Временный прокси для входа (до создания профиля). Применяется к клиенту
+        # на send_code и переносится в профиль после успешного логина.
+        self._pending_proxy: str = ""
         self._folder_active: bool = False
         self._folder_mode: str = "По чатам"   # "По чатам" | "Один .md на чат" | "Один .md на папку"
         self._folder_transcribe: bool = False
@@ -156,6 +159,37 @@ class App(ctk.CTk):
     def show_add_account(self) -> None:
         from .views.add_account_modal import AddAccountModal
         AddAccountModal(self)
+
+    def show_proxy_settings(self, phone: str) -> None:
+        from .views.proxy_modal import ProxyModal
+        ProxyModal(self, phone)
+
+    def show_login_proxy(self) -> None:
+        """Прокси для входа (до создания профиля) — открывает модалку без phone."""
+        from .views.proxy_modal import ProxyModal
+        ProxyModal(self, None)
+
+    @property
+    def pending_proxy(self) -> str:
+        return self._pending_proxy
+
+    def set_pending_proxy(self, proxy_url: str) -> None:
+        """Сохраняет временный прокси входа и применяет к клиенту до логина."""
+        self._pending_proxy = proxy_url or ""
+        self._worker.submit(self._client_mgr.use_proxy, self._pending_proxy)
+
+    def test_account_proxy(self, modal, proxy_url: str) -> None:
+        """Проверяет прокси в фоне (кнопка «Тест связи» в ProxyModal)."""
+        self._worker.submit(self._bg_test_proxy, modal, proxy_url)
+
+    def apply_active_proxy(self, proxy_url: str) -> None:
+        """
+        Применяет прокси к клиенту активного профиля. use_proxy() рвёт и
+        пересоздаёт клиент (disconnect → asyncio), поэтому выполняем в worker-
+        потоке: нельзя трогать клиент из UI-потока (§10.6) и нужно сериализовать
+        с возможным активным экспортом, который идёт в том же worker.
+        """
+        self._worker.submit(self._client_mgr.use_proxy, proxy_url)
 
     def show_export_dialog(self, dialog) -> None:
         modal = ExportModal(self, dialog)
@@ -399,6 +433,11 @@ class App(ctk.CTk):
                 session_string=session_str,
                 display_name=display_name, set_active=True,
             )
+            # Переносим временный прокси входа в созданный профиль, чтобы он
+            # сохранился между запусками (а не жил только в памяти сессии).
+            if self._pending_proxy:
+                self._profiles.set_proxy(phone, self._pending_proxy)
+                self._pending_proxy = ""
         except Exception as exc:
             logger.error("save_active_profile_session failed", exc=exc)
 
@@ -419,6 +458,10 @@ class App(ctk.CTk):
         # иначе клиент построится с дефолтной (пустой для мульти-аккаунтных сетапов).
         active = self._profiles.active()
         if active:
+            # Прокси профиля применяем всегда (даже если сессии ещё нет) —
+            # автовход у РФ-юзеров может идти только через прокси. Берём полную
+            # строку (с секретом) из Keyring через load_proxy.
+            self._client_mgr.use_proxy(self._profiles.load_proxy(active))
             session_str = self._profiles.load_session(active)
             if session_str:
                 if active.api_id and active.api_id != self.config.api_id:
@@ -469,6 +512,7 @@ class App(ctk.CTk):
                 self.config = self.config.with_api_id(profile.api_id)
                 self.config.save()
                 self._client_mgr.update_config(self.config)
+            self._client_mgr.use_proxy(self._profiles.load_proxy(profile))
             self._client_mgr.use_session(session_str)
             client = self._client_mgr.ensure_connected()
             if not client.is_user_authorized():
@@ -478,6 +522,14 @@ class App(ctk.CTk):
         except Exception as exc:
             logger.error("switch_profile failed", exc=exc)
             self._worker.put_event("error", f"Не удалось переключиться: {exc}")
+
+    def _bg_test_proxy(self, modal, proxy_url: str) -> None:
+        """Проверка прокси через временный клиент. Не трогает активную сессию."""
+        try:
+            ok, message = self._client_mgr.test_proxy(proxy_url)
+        except Exception as exc:
+            ok, message = False, f"Ошибка проверки: {exc}"
+        self._worker.put_event("proxy_test_result", (modal, (ok, message)))
 
     def _bg_load_chats(self) -> None:
         try:
@@ -589,6 +641,7 @@ class App(ctk.CTk):
         d.on("add_account_2fa",       self._on_add_account_2fa)
         d.on("add_account_done",      self._on_add_account_done)
         d.on("add_account_error",     self._on_add_account_error)
+        d.on("proxy_test_result",     self._on_proxy_test_result)
 
         d.on("chats_loaded",     self._on_chats_loaded)
         d.on("chats_load_failed", self._on_chats_load_failed)
@@ -643,6 +696,13 @@ class App(ctk.CTk):
         modal, message = payload
         try:
             modal.on_error(message or "Ошибка")
+        except Exception:
+            pass
+
+    def _on_proxy_test_result(self, payload) -> None:
+        modal, (ok, message) = payload
+        try:
+            modal.on_test_result(ok, message)
         except Exception:
             pass
 

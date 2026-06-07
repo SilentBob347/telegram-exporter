@@ -28,6 +28,12 @@ _REDACT_PATTERNS = [
     (re.compile(r"(?i)api[_-]?hash\s*[:=]\s*[A-Za-z0-9]+"), "api_hash=<redacted>"),
     (re.compile(r"(?i)api[_-]?id\s*[:=]\s*\d+"), "api_id=<redacted>"),
     (re.compile(r"(?i)session\s*[:=]\s*[A-Za-z0-9+/=_\-]{20,}"), "session=<redacted>"),
+    # Прокси-URL с логином:паролем — маскируем «user:pass@», host:port оставляем
+    # для диагностики (scheme://...@host:port → scheme://<redacted>@host:port).
+    # Жадность \S+ ограничена до последнего '@' перед host, чтобы покрыть пароли
+    # со спецсимволами (напр. p@ssw0rd@host).
+    (re.compile(r"(?i)\b(socks5h?|socks4a?|https?|mtproto|mtproxy)://\S+@"),
+     r"\1://<redacted>@"),
     (re.compile(r"\+\d{10,15}\b"), "<phone>"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9+/=_\-]{20,}"), "Bearer <redacted>"),
     (re.compile(r"(?i)token\s+[A-Za-z0-9+/=_\-]{20,}"), "Token <redacted>"),

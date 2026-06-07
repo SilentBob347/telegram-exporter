@@ -206,7 +206,33 @@ class AddAccountModal(ctk.CTkToplevel):
         api_hash = self._app.credentials.load_api_hash(self._app.config.api_id)
         if not api_id_int or not api_hash:
             return None
-        return TelegramClient(StringSession(), api_id_int, api_hash)
+        # Прокси: временный прокси входа (если задан в этой модалке) или прокси
+        # активного профиля. Без него добавить 2-й аккаунт за прокси нельзя —
+        # временный клиент бы шёл напрямую и таймаутил у РФ-юзеров без VPN.
+        kwargs = self._proxy_kwargs()
+        return TelegramClient(StringSession(), api_id_int, api_hash, **kwargs)
+
+    def _proxy_kwargs(self) -> dict:
+        """proxy=/connection= для временного клиента. Невалидный прокси игнорируется."""
+        proxy_url = (self._app.pending_proxy or "").strip()
+        if not proxy_url:
+            active = self._app.active_profile()
+            if active:
+                proxy_url = (self._app._profiles.load_proxy(active) or "").strip()
+        if not proxy_url:
+            return {}
+        from ...core.proxy import parse_proxy, ProxyValidationError
+        try:
+            cfg = parse_proxy(proxy_url)
+        except ProxyValidationError:
+            return {}
+        if cfg is None:
+            return {}
+        tele = cfg.to_telethon()
+        kwargs = {"proxy": tele["proxy"]}
+        if tele["connection"] is not None:
+            kwargs["connection"] = tele["connection"]
+        return kwargs
 
     def _dispose_client(self) -> None:
         if self._client is not None:

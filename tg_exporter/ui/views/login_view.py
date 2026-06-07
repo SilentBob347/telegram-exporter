@@ -76,6 +76,13 @@ class LoginView(ctk.CTkFrame):
         )
         # не показываем пока нет ключей
 
+        # Прокси для входа (для РФ-юзеров без VPN). Применяется к первому входу.
+        self._proxy_btn = AppButton(
+            self._card, text="🌐 Прокси (если нет VPN)", variant="ghost",
+            command=self._app.show_login_proxy,
+        )
+        self._proxy_btn.pack(padx=pad, fill="x", pady=(0, SPACING["sm"]))
+
         # Телефон
         self._phone_entry = AppEntry(self._card, placeholder_text="+7 900 000-00-00")
         self._phone_entry.pack(padx=pad, fill="x", pady=(0, SPACING["xs"]))

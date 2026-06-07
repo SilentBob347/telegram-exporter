@@ -35,6 +35,9 @@ class Profile:
     phone: str
     display_name: str = ""
     api_id: str = ""
+    # URL-строка прокси для этого аккаунта ("" — без прокси). Несекретная,
+    # хранится в profiles.json. Формат разбирается в core/proxy.py.
+    proxy: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -47,6 +50,10 @@ class Profile:
 
 def _session_key(api_id: str, phone: str) -> str:
     return f"{api_id}:session:{phone}"
+
+
+def _proxy_key(api_id: str, phone: str) -> str:
+    return f"{api_id}:proxy:{phone}"
 
 
 class ProfileManager:
@@ -180,6 +187,7 @@ class ProfileManager:
             self._save()
             api_id = profile.api_id
         self._delete_session(api_id, phone)
+        self._delete_proxy(api_id, phone)
         return True
 
     def rename(self, phone: str, display_name: str) -> bool:
@@ -191,6 +199,82 @@ class ProfileManager:
             profile.display_name = display_name or phone
             self._save()
             return True
+
+    def set_proxy(self, phone: str, proxy: str) -> bool:
+        """
+        Задаёт/очищает прокси для аккаунта. "" — убрать прокси.
+
+        Секрет (пароль/MTProto-секрет) хранится в Keyring под `{api_id}:proxy:
+        {phone}`; в profiles.json пишется только несекретная часть (public_url:
+        тип/host/port/username) — для UI-метки и предзаполнения полей.
+        """
+        phone = _normalize_phone(phone)
+        with self._lock:
+            profile = next((p for p in self._profiles if p.phone == phone), None)
+            if profile is None:
+                return False
+            full = (proxy or "").strip()
+            if not full:
+                profile.proxy = ""
+                self._save()
+                api_id = profile.api_id
+                self._delete_proxy(api_id, phone)
+                return True
+            # Разбираем, чтобы отделить публичную часть от секрета.
+            from .proxy import parse_proxy, ProxyValidationError
+            try:
+                cfg = parse_proxy(full)
+            except ProxyValidationError:
+                cfg = None
+            if cfg is not None:
+                profile.proxy = cfg.public_url()
+            else:
+                # Не распарсилось — кладём как есть (без секрета отделить нельзя);
+                # это не должно случаться, т.к. UI валидирует перед сохранением.
+                profile.proxy = full
+            self._save()
+            api_id = profile.api_id
+        # Полный URL (с секретом) — в Keyring.
+        self._save_proxy_secret(api_id, phone, full)
+        return True
+
+    # ---------------------------------------------------------- proxy I/O
+
+    def load_proxy(self, profile: Profile) -> str:
+        """
+        Полная строка прокси (с секретом) из Keyring. Фолбэк на profile.proxy
+        (public, из файла) для профилей без сохранённого в Keyring секрета.
+        """
+        if not profile.api_id or not profile.phone:
+            return profile.proxy or ""
+        try:
+            import keyring
+            full = keyring.get_password("tg_exporter", _proxy_key(profile.api_id, profile.phone))
+            if full:
+                return full
+        except Exception:
+            pass
+        return profile.proxy or ""
+
+    def _save_proxy_secret(self, api_id: str, phone: str, full_url: str) -> None:
+        if not api_id or not phone or not full_url:
+            return
+        try:
+            import keyring
+            keyring.set_password("tg_exporter", _proxy_key(api_id, phone), full_url)
+        except Exception as exc:
+            logger.error(f"profiles: save proxy failed: {exc}")
+
+    def _delete_proxy(self, api_id: str, phone: str) -> None:
+        if not api_id or not phone:
+            return
+        try:
+            import keyring
+            key = _proxy_key(api_id, phone)
+            if keyring.get_password("tg_exporter", key):
+                keyring.delete_password("tg_exporter", key)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- session I/O
 

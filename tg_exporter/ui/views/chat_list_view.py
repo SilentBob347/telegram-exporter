@@ -299,6 +299,11 @@ class ChatListView(ctk.CTkFrame):
             menu.add_separator()
         menu.add_command(label="+ Добавить аккаунт", command=self._app.show_add_account)
         if active is not None:
+            proxy_mark = " ✓" if (active.proxy or "").strip() else ""
+            menu.add_command(
+                label=f"🌐 Прокси…{proxy_mark}",
+                command=lambda phone=active.phone: self._app.show_proxy_settings(phone),
+            )
             menu.add_command(
                 label=f"Удалить «{active.display_name or active.phone}»",
                 command=lambda: self._on_remove_profile(active.phone),
