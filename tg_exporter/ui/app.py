@@ -22,10 +22,12 @@ import customtkinter as ctk
 
 from .theme import C, WINDOW
 from .views.login_view import LoginView
-from .views.chat_list_view import ChatListView
-from .views.settings_modal import SettingsModal
+from .views.chats_page import ChatsPage
+from .views.accounts_page import AccountsPage
+from .views.settings_page import SettingsPage
+from .views.help_page import HelpPage
 from .views.export_modal import ExportModal
-from .views.help_modal import HelpModal
+from .components.sidebar import Sidebar
 
 from ..models.config import AppConfig
 from ..models.export_task import ExportTask, ExportProgress, ExportFormat, AuthorFilter
@@ -105,11 +107,29 @@ class App(ctk.CTk):
         # все чаты пакета выгружались с одинаковым диапазоном дат.
         self._folder_dates: tuple[Optional[datetime.datetime], Optional[datetime.datetime]] = (None, None)
 
-        # Views
+        # Views / Shell
         self._container = ctk.CTkFrame(self, fg_color="transparent")
         self._container.pack(fill="both", expand=True)
+
+        # LOGIN-режим: login_view на всё окно
         self.login_view = LoginView(self._container, self)
-        self.chats_view = ChatListView(self._container, self)
+
+        # SHELL-режим: sidebar + контейнер страниц
+        self._shell = ctk.CTkFrame(self._container, fg_color="transparent")
+        self.sidebar = Sidebar(self._shell, self, on_select=self._show_page)
+        self.sidebar.pack(side="left", fill="y")
+        self._page_container = ctk.CTkFrame(self._shell, fg_color="transparent")
+        self._page_container.pack(side="left", fill="both", expand=True)
+
+        self.chats_page = ChatsPage(self._page_container, self)
+        self.accounts_page = AccountsPage(self._page_container, self)
+        self.settings_page = SettingsPage(self._page_container, self)
+        self.help_page = HelpPage(self._page_container, self)
+        self._pages = {
+            "chats": self.chats_page, "accounts": self.accounts_page,
+            "settings": self.settings_page, "help": self.help_page,
+        }
+        self._current_page = None
         self._current_view = None
 
         # Регистрация обработчиков событий
@@ -130,7 +150,10 @@ class App(ctk.CTk):
     # ---- Navigation ----
 
     def show_login(self) -> None:
-        self._switch_view(self.login_view)
+        # LOGIN-режим: прячем shell, показываем login на всё окно.
+        self._shell.pack_forget()
+        self.login_view.pack(fill="both", expand=True)
+        self._current_view = self.login_view
         self.login_view.refresh_state()
         if self.has_api_creds() and self._has_any_session():
             self._worker.submit(self._bg_check_session)
@@ -142,19 +165,43 @@ class App(ctk.CTk):
             return True
         return bool(self.credentials.load_session(self.config.api_id))
 
+    def _show_shell(self) -> None:
+        """SHELL-режим: login скрыт, видны sidebar + страницы."""
+        self.login_view.pack_forget()
+        self._shell.pack(fill="both", expand=True)
+        self._current_view = self._shell
+
+    def _show_page(self, name: str) -> None:
+        """Переключает активную страницу в контейнере + подсветку sidebar."""
+        page = self._pages.get(name)
+        if page is None:
+            return
+        if self._current_page is not None:
+            self._current_page.pack_forget()
+        page.pack(fill="both", expand=True)
+        self._current_page = page
+        self.sidebar.set_active(name)
+        # Обновляем данные страниц, зависящих от состояния, при показе.
+        if name in ("accounts", "settings"):
+            page.refresh()
+
     def show_chats(self) -> None:
-        self._switch_view(self.chats_view)
+        self._show_shell()
+        self._show_page("chats")
         self.load_chats()
 
     def show_settings(self) -> None:
-        SettingsModal(self)
+        self._show_shell()
+        self._show_page("settings")
 
     def show_api_keys(self) -> None:
-        from .views.api_keys_modal import ApiKeysModal
-        ApiKeysModal(self)
+        # API-ключи теперь часть страницы настроек.
+        self._show_shell()
+        self._show_page("settings")
 
     def show_help(self) -> None:
-        HelpModal(self)
+        self._show_shell()
+        self._show_page("help")
 
     def show_add_account(self) -> None:
         from .views.add_account_modal import AddAccountModal
@@ -194,12 +241,6 @@ class App(ctk.CTk):
     def show_export_dialog(self, dialog) -> None:
         modal = ExportModal(self, dialog)
         self._active_export_modal = modal
-
-    def _switch_view(self, view) -> None:
-        if self._current_view:
-            self._current_view.pack_forget()
-        view.pack(fill="both", expand=True)
-        self._current_view = view
 
     # ---- Auth actions ----
 
@@ -252,9 +293,9 @@ class App(ctk.CTk):
         # медленном/завивающем get_dialogs() пользователь видит пустой
         # «Загрузка чатов...» и думает, что всё сломалось.
         if self._all_dialogs:
-            self.chats_view.show_refreshing()
+            self.chats_page.show_refreshing()
         else:
-            self.chats_view.show_loading()
+            self.chats_page.show_loading()
         self._worker.submit(self._bg_load_chats)
 
     def filter_chats(self, query: str = "") -> None:
@@ -262,7 +303,7 @@ class App(ctk.CTk):
         if query:
             q = query.lower()
             dialogs = [d for d in dialogs if q in (d.name or "").lower()]
-        self.chats_view.render_chats(dialogs)
+        self.chats_page.render_chats(dialogs)
 
     def set_current_folder(self, folder_name: str) -> None:
         self._current_folder = folder_name or "Все чаты"
@@ -645,7 +686,7 @@ class App(ctk.CTk):
 
         d.on("chats_loaded",     self._on_chats_loaded)
         d.on("chats_load_failed", self._on_chats_load_failed)
-        d.on("folders_loaded",   lambda names: self.chats_view.set_folders(names))
+        d.on("folders_loaded",   lambda names: self.chats_page.set_folders(names))
         d.on("error",            self._on_error)
         d.on("info",             self._on_info)
         d.on("worker_error",     lambda tb: logger.error(f"Worker error:\n{tb}"))
@@ -707,28 +748,29 @@ class App(ctk.CTk):
             pass
 
     def _on_profile_switched(self, profile: Profile) -> None:
-        # Обновляем список чатов и шапку под новый аккаунт
+        # Обновляем список чатов под новый аккаунт + карточки аккаунтов
+        # (пометка «активный»), затем показываем страницу «Чаты».
         self._all_dialogs = []
         self._folder_peers = {}
         self._folder_filters = {}
         self._folder_excludes = {}
+        self.accounts_page.refresh()
         self.show_chats()
-        self.chats_view.refresh_account_switcher()
 
     def _on_chats_loaded(self, dialogs) -> None:
         self._all_dialogs = dialogs
         self.filter_chats(
-            self.chats_view._search_entry.get().strip()
-            if hasattr(self.chats_view, "_search_entry") else ""
+            self.chats_page._search_entry.get().strip()
+            if hasattr(self.chats_page, "_search_entry") else ""
         )
 
     def _on_chats_load_failed(self, _payload) -> None:
         # Возвращаем статус «Чатов: N» вместо застрявшего «Обновление...».
         # Если ничего не было загружено раньше — пусто.
         if self._all_dialogs:
-            self.chats_view.set_status(f"Чатов: {len(self._all_dialogs)}")
+            self.chats_page.set_status(f"Чатов: {len(self._all_dialogs)}")
         else:
-            self.chats_view.set_status("Не удалось загрузить чаты")
+            self.chats_page.set_status("Не удалось загрузить чаты")
 
     def _on_error(self, msg: str) -> None:
         import tkinter.messagebox as mb
@@ -802,7 +844,7 @@ class App(ctk.CTk):
 
     def _on_folder_progress(self, payload) -> None:
         current, total, label = payload
-        self.chats_view.set_status(f"Папка: {current}/{total} — {label}")
+        self.chats_page.set_status(f"Папка: {current}/{total} — {label}")
 
     def _on_folder_done(self, total: int) -> None:
         import os, glob as _glob
@@ -835,7 +877,7 @@ class App(ctk.CTk):
         msg = f"Папка готова: {ok} успешно"
         if err:
             msg += f", {err} ошибок"
-        self.chats_view.set_status(msg)
+        self.chats_page.set_status(msg)
 
     # ---- Polling ----
 
