@@ -25,3 +25,6 @@ telegram_session.session-journal
 .idea/
 .vscode/
 CLAUDE.md
+
+# Visual brainstorming companion
+.superpowers/
