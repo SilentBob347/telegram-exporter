@@ -812,6 +812,10 @@ class App(ctk.CTk):
         d.on("add_account_2fa",       self._on_add_account_2fa)
         d.on("add_account_done",      self._on_add_account_done)
         d.on("add_account_error",     self._on_add_account_error)
+        d.on("add_account_qr_ready",   self._on_add_account_qr_ready)
+        d.on("add_account_qr_2fa",     self._on_add_account_qr_2fa)
+        d.on("add_account_qr_expired", self._on_add_account_qr_expired)
+        d.on("add_account_qr_error",   self._on_add_account_qr_error)
         d.on("proxy_test_result",     self._on_proxy_test_result)
 
         d.on("chats_loaded",     self._on_chats_loaded)
@@ -867,6 +871,35 @@ class App(ctk.CTk):
         modal, message = payload
         try:
             modal.on_error(message or "Ошибка")
+        except Exception:
+            pass
+
+    def _on_add_account_qr_ready(self, payload) -> None:
+        modal, url = payload
+        try:
+            modal.on_qr_ready(url)
+        except Exception:
+            pass
+
+    def _on_add_account_qr_2fa(self, payload) -> None:
+        modal, data = payload
+        try:
+            # data == "wrong" → повторная попытка после неверного пароля.
+            modal.on_qr_2fa(retry=(data == "wrong"))
+        except Exception:
+            pass
+
+    def _on_add_account_qr_expired(self, payload) -> None:
+        modal, _ = payload
+        try:
+            modal.on_qr_expired()
+        except Exception:
+            pass
+
+    def _on_add_account_qr_error(self, payload) -> None:
+        modal, message = payload
+        try:
+            modal.on_qr_error(message or "Ошибка QR")
         except Exception:
             pass
 
