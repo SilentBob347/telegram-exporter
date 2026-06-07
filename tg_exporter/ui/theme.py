@@ -109,6 +109,9 @@ WIDGET = {
 
 WINDOW = {
     "title":       "Telegram Exporter",
-    "size":        "920x720",
-    "min_size":    (640, 600),
+    "size":        "1040x720",
+    "min_size":    (860, 600),
 }
+
+# Ширина бокового меню
+SIDEBAR_W = 200
