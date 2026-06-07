@@ -448,11 +448,15 @@ class LoginView(ctk.CTkFrame):
             self._hide_widget(self._code_entry)
             self._hide_widget(self._pwd_frame)
             self._hide_widget(self._action_btn)
-            # Показываем QR-блок.
+            # Показываем QR-блок. Очищаем старую картинку/поле пароля, чтобы
+            # при повторном входе по QR не висело предыдущее состояние.
             self.clear_error()
+            self._qr_widget.clear()
+            self._pwd_entry.clear()
             self._hide_widget(self._qr_refresh_btn)
             self._hide_widget(self._qr_2fa_btn)
             self._hide_widget(self._qr_cancel_btn)
+            self._hide_widget(self._pwd_frame)
             self._qr_status.configure(text="Запрашиваю код…", text_color=C["text_sec"])
             self._show_widget(self._qr_frame, pady=(0, SPACING["md"]),
                               before=self._error_lbl)
