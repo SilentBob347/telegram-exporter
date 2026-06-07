@@ -21,7 +21,7 @@ class ExportProgressWidget(ctk.CTkFrame):
     """
     Компактная полоса прогресса экспорта.
 
-    Встраивается inline в ChatListView или в ExportModal.
+    Встраивается inline в ChatsPage или в ExportModal.
     """
 
     def __init__(self, master, on_cancel: Callable, **kwargs) -> None:
