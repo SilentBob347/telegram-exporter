@@ -260,6 +260,7 @@ class AuthService:
             return self._waiting_or_expired()
         except SessionPasswordNeededError:
             # 2FA: дальше пароль через verify_password().
+            logger.info("poll_qr: 2FA требуется (SessionPasswordNeededError)")
             return AuthResult.password_required()
         except AuthRestartError:
             # Telegram просит перезапустить QR-токен → как «истёк»: пользователь
@@ -271,7 +272,14 @@ class AuthService:
         except FloodWaitError as exc:
             return AuthResult.error(f"Слишком много запросов. Подождите {exc.seconds} сек.")
         except Exception as exc:
-            logger.error("poll_qr failed", exc=exc)
+            # Диагностика: telethon QRLogin.wait при 2FA может бросать не
+            # SessionPasswordNeededError, а TypeError ('Login token response was
+            # unexpected') — ловим этот случай и трактуем как 2FA.
+            name = type(exc).__name__
+            msg = str(exc)
+            logger.error(f"poll_qr exception: {name}: {msg}")
+            if "SESSION_PASSWORD_NEEDED" in msg or "password" in msg.lower():
+                return AuthResult.password_required()
             return AuthResult.error(_friendly(exc))
 
     def _waiting_or_expired(self) -> AuthResult:
