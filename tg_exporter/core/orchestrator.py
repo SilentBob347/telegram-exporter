@@ -191,101 +191,113 @@ class ExportOrchestrator:
         transcribe_warned = False
         video_note_saved_ids: set[int] = set()
 
-        for msg in c.iter_messages(dialog, **iter_kwargs):
-            token.raise_if_cancelled()
-
-            if date_to_end and hasattr(msg, "date") and msg.date and msg.date >= date_to_end:
-                break
-
-            msg_id = getattr(msg, "id", 0) or 0
-            if msg_id > max_msg_id:
-                max_msg_id = msg_id
-
-            # Фильтр авторов
-            if not task.author_filter.is_empty():
-                sender_id = getattr(msg, "sender_id", None)
-                if not task.author_filter.matches(sender_id):
-                    count += 1
-                    _maybe_send_progress(send, count, total)
-                    continue
-
-            export_msg = message_to_export(msg)
-
-            # Транскрипция
-            if (
-                transcriber is not None
-                and not transcribe_failed
-                and export_msg.media_type is not None
-                and export_msg.media_type.value in ("voice", "video_note")
-            ):
+        # Отмена/ошибка в середине цикла не должна оставлять полуоткрытые файлы:
+        # JsonExporter пишет потоково, и без close() result.json остаётся без
+        # закрывающих скобок (невалидный JSON). На отмене закрываем экспортёры
+        # (close() дописывает скобки → валидный частичный экспорт) и пробрасываем.
+        try:
+            for msg in c.iter_messages(dialog, **iter_kwargs):
                 token.raise_if_cancelled()
-                try:
-                    send("export_status", "Скачивание голосового сообщения...")
-                    prep: Optional[AudioPrepResult] = self._media.prepare_audio(msg, token)
-                    send("export_status", "")
 
-                    if prep is not None:
-                        token.raise_if_cancelled()
-                        send("export_status", "Транскрипция...")
-                        try:
-                            text = transcriber.transcribe(
-                                prep.audio_data,
-                                prep.content_type,
-                                self._config.transcription_language,
-                            )
-                        except TranscriptionError as exc:
-                            text = None
-                            if not transcribe_warned:
-                                transcribe_warned = True
-                                reason = str(exc)
-                                send("info", f"Не удалось транскрибировать: {reason}. Экспорт продолжен.")
+                if date_to_end and hasattr(msg, "date") and msg.date and msg.date >= date_to_end:
+                    break
+
+                msg_id = getattr(msg, "id", 0) or 0
+                if msg_id > max_msg_id:
+                    max_msg_id = msg_id
+
+                # Фильтр авторов
+                if not task.author_filter.is_empty():
+                    sender_id = getattr(msg, "sender_id", None)
+                    if not task.author_filter.matches(sender_id):
+                        count += 1
+                        _maybe_send_progress(send, count, total)
+                        continue
+
+                export_msg = message_to_export(msg)
+
+                # Транскрипция
+                if (
+                    transcriber is not None
+                    and not transcribe_failed
+                    and export_msg.media_type is not None
+                    and export_msg.media_type.value in ("voice", "video_note")
+                ):
+                    token.raise_if_cancelled()
+                    try:
+                        send("export_status", "Скачивание голосового сообщения...")
+                        prep: Optional[AudioPrepResult] = self._media.prepare_audio(msg, token)
                         send("export_status", "")
 
-                        if text:
-                            export_msg = export_msg.with_transcription(text)
-
-                        # Сохраняем WAV video_note в media/audio
-                        if prep.saved_path and media_dirs:
-                            audio_out = os.path.join(media_dirs.audio, f"vn_{msg_id}.wav")
+                        if prep is not None:
+                            token.raise_if_cancelled()
+                            send("export_status", "Транскрипция...")
                             try:
-                                import shutil
-                                shutil.move(prep.saved_path, audio_out)
-                                video_note_saved_ids.add(msg_id)
-                            except Exception:
-                                pass
+                                text = transcriber.transcribe(
+                                    prep.audio_data,
+                                    prep.content_type,
+                                    self._config.transcription_language,
+                                )
+                            except TranscriptionError as exc:
+                                text = None
+                                if not transcribe_warned:
+                                    transcribe_warned = True
+                                    reason = str(exc)
+                                    send("info", f"Не удалось транскрибировать: {reason}. Экспорт продолжен.")
+                            send("export_status", "")
 
-                except (MediaTooLongError, MediaProcessingError) as exc:
-                    send("export_status", "")
-                    if not transcribe_warned:
-                        transcribe_warned = True
-                        send("info", str(exc))
-                except CancelledError:
-                    raise
-                except Exception:
-                    send("export_status", "")
+                            if text:
+                                export_msg = export_msg.with_transcription(text)
 
-            # Запись в экспортёры
+                            # Сохраняем WAV video_note в media/audio
+                            if prep.saved_path and media_dirs:
+                                audio_out = os.path.join(media_dirs.audio, f"vn_{msg_id}.wav")
+                                try:
+                                    import shutil
+                                    shutil.move(prep.saved_path, audio_out)
+                                    video_note_saved_ids.add(msg_id)
+                                except Exception:
+                                    pass
+
+                    except (MediaTooLongError, MediaProcessingError) as exc:
+                        send("export_status", "")
+                        if not transcribe_warned:
+                            transcribe_warned = True
+                            send("info", str(exc))
+                    except CancelledError:
+                        raise
+                    except Exception:
+                        send("export_status", "")
+
+                # Запись в экспортёры
+                if json_exp:
+                    json_exp.write(export_msg)
+                if md_exp:
+                    md_exp.write(export_msg)
+
+                # Аналитика
+                if analytics and export_msg.type == "message":
+                    is_out = bool(getattr(msg, "out", False))
+                    formatted = export_msg.text or ""
+                    analytics.add(export_msg, formatted, is_out)
+
+                # Скачивание медиа
+                if media_dirs and export_msg.media_type is not None:
+                    token.raise_if_cancelled()
+                    self._media.download(msg, media_dirs, token, video_note_saved_ids)
+
+                count += 1
+                _maybe_send_progress(send, count, total)
+
+            # --- Финализация ---
+            token.raise_if_cancelled()
+        except CancelledError:
+            # Закрываем экспортёры, чтобы частичные файлы остались валидными.
             if json_exp:
-                json_exp.write(export_msg)
+                json_exp.close()
             if md_exp:
-                md_exp.write(export_msg)
-
-            # Аналитика
-            if analytics and export_msg.type == "message":
-                is_out = bool(getattr(msg, "out", False))
-                formatted = export_msg.text or ""
-                analytics.add(export_msg, formatted, is_out)
-
-            # Скачивание медиа
-            if media_dirs and export_msg.media_type is not None:
-                token.raise_if_cancelled()
-                self._media.download(msg, media_dirs, token, video_note_saved_ids)
-
-            count += 1
-            _maybe_send_progress(send, count, total)
-
-        # --- Финализация ---
-        token.raise_if_cancelled()
+                md_exp.close()
+            raise
 
         output_files: list[str] = []
         if json_exp:
