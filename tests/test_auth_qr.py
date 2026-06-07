@@ -224,6 +224,19 @@ class TestAuthQR(unittest.TestCase):
         res = svc.verify_qr_password("")
         self.assertEqual(res.step, self.AuthStep.ERROR)
 
+    def test_cancel_qr_resets_state(self):
+        # cancel_qr сбрасывает _qr/_qr_pwd_pending и пересоздаёт клиент
+        # (для входа другим способом после застрявшего 2FA).
+        qr = _FakeQR(expires=_future())
+        svc = self._service(qr)
+        svc.start_qr()
+        svc._qr_pwd_pending = True  # имитируем застрявший 2FA
+        # _FakeClientMgr нужен destroy()
+        svc._client.destroy = lambda: None
+        svc.cancel_qr()
+        self.assertIsNone(svc._qr)
+        self.assertFalse(svc._qr_pwd_pending)
+
     def test_recreate_qr_on_connection_error_starts_fresh(self):
         # recreate на «мёртвом» QR → ConnectionError → берём свежий токен с нуля.
         class _DeadQR(_FakeQR):

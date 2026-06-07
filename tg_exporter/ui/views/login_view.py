@@ -171,6 +171,17 @@ class LoginView(ctk.CTkFrame):
             self._qr_frame, text="Войти", size="sm",
             command=self._on_qr_2fa_submit,
         )
+        # «Войти другим способом» — сброс QR/2FA, возврат ко входу по номеру.
+        # Показывается в 2FA-состоянии (когда застрял с паролем/другой аккаунт).
+        self._qr_cancel_btn = AppButton(
+            self._qr_frame, text="← Войти другим способом", variant="ghost", size="sm",
+            command=self._cancel_qr_to_phone,
+        )
+
+    def _cancel_qr_to_phone(self) -> None:
+        """Сбрасывает QR/2FA и возвращает на вход по номеру."""
+        self._mode_var.set("По номеру")
+        self._on_mode_change("По номеру")
 
     def _build_conn_tab(self, pad: int) -> None:
         """
@@ -384,6 +395,7 @@ class LoginView(ctk.CTkFrame):
             text_color=C["text_sec"],
         )
         self._hide_widget(self._qr_refresh_btn)
+        self._hide_widget(self._qr_cancel_btn)
 
     def on_qr_2fa(self) -> None:
         """QR-вход требует пароль 2FA — показываем поле пароля и кнопку «Войти»."""
@@ -394,6 +406,8 @@ class LoginView(ctk.CTkFrame):
                           pady=(0, SPACING["sm"]), before=self._error_lbl)
         # Кнопка «Войти» — ребёнок _qr_frame, под статусом.
         self._show_widget(self._qr_2fa_btn, pady=(0, SPACING["sm"]))
+        # «Войти другим способом» — выход из застрявшего 2FA / смена аккаунта.
+        self._show_widget(self._qr_cancel_btn)
         self._pwd_entry.focus()
 
     def on_qr_2fa_retry(self, msg: str) -> None:
@@ -438,6 +452,7 @@ class LoginView(ctk.CTkFrame):
             self.clear_error()
             self._hide_widget(self._qr_refresh_btn)
             self._hide_widget(self._qr_2fa_btn)
+            self._hide_widget(self._qr_cancel_btn)
             self._qr_status.configure(text="Запрашиваю код…", text_color=C["text_sec"])
             self._show_widget(self._qr_frame, pady=(0, SPACING["md"]),
                               before=self._error_lbl)
@@ -449,6 +464,7 @@ class LoginView(ctk.CTkFrame):
             self._hide_widget(self._qr_frame)
             self._hide_widget(self._qr_refresh_btn)
             self._hide_widget(self._qr_2fa_btn)
+            self._hide_widget(self._qr_cancel_btn)
             self._hide_widget(self._pwd_frame)  # мог остаться от QR-2FA
             self._code_entry.clear()
             self._pwd_entry.clear()
