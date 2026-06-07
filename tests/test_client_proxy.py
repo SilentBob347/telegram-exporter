@@ -129,5 +129,30 @@ class TestProxyConnectionTest(unittest.TestCase):
         self.assertIn("подключиться", msg)
 
 
+class TestFreshSession(unittest.TestCase):
+    """use_fresh_session — чистый auth_key для перезапуска QR (игнор Keyring)."""
+
+    def test_fresh_session_ignores_keyring(self):
+        from tg_exporter.core.client import TelegramClientManager
+        from tg_exporter.models.config import AppConfig
+        # creds с НЕпустой сохранённой сессией — fresh должен её проигнорировать
+        creds = _FakeCreds(session="OLD_SESSION_SHOULD_BE_IGNORED")
+        mgr = TelegramClientManager(AppConfig(api_id="12345"), creds)
+        mgr.use_fresh_session()
+        client = mgr._build_client()
+        saved = client.session.save()
+        self.assertNotEqual(saved, "OLD_SESSION_SHOULD_BE_IGNORED")
+
+    def test_normal_session_still_used_after_fresh(self):
+        # use_session перекрывает FRESH (другие потоки логина не ломаются)
+        from tg_exporter.core.client import TelegramClientManager
+        from tg_exporter.models.config import AppConfig
+        creds = _FakeCreds(session=None)
+        mgr = TelegramClientManager(AppConfig(api_id="12345"), creds)
+        mgr.use_fresh_session()
+        mgr.use_session("REAL_SESSION")  # перекрывает sentinel
+        self.assertEqual(mgr._session_override, "REAL_SESSION")
+
+
 if __name__ == "__main__":
     unittest.main()

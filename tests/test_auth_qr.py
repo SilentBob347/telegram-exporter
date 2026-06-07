@@ -225,17 +225,19 @@ class TestAuthQR(unittest.TestCase):
         self.assertEqual(res.step, self.AuthStep.ERROR)
 
     def test_cancel_qr_resets_state(self):
-        # cancel_qr сбрасывает _qr/_qr_pwd_pending и пересоздаёт клиент
-        # (для входа другим способом после застрявшего 2FA).
+        # cancel_qr сбрасывает _qr/_qr_pwd_pending и ФОРСИРУЕТ свежую сессию
+        # (новый auth_key) — иначе Telegram держит привязанный 2FA-логин и
+        # снова просит пароль вместо нового QR.
         qr = _FakeQR(expires=_future())
         svc = self._service(qr)
         svc.start_qr()
         svc._qr_pwd_pending = True  # имитируем застрявший 2FA
-        # _FakeClientMgr нужен destroy()
-        svc._client.destroy = lambda: None
+        called = {"fresh": False}
+        svc._client.use_fresh_session = lambda: called.__setitem__("fresh", True)
         svc.cancel_qr()
         self.assertIsNone(svc._qr)
         self.assertFalse(svc._qr_pwd_pending)
+        self.assertTrue(called["fresh"], "cancel_qr должен форсировать свежую сессию")
 
     def test_recreate_qr_on_connection_error_starts_fresh(self):
         # recreate на «мёртвом» QR → ConnectionError → берём свежий токен с нуля.

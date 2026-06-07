@@ -23,6 +23,11 @@ from ..models.config import AppConfig
 from ..utils.logger import logger
 
 
+# Маркер «форсировать брэнд-новую пустую сессию» для _session_override.
+# Не может совпасть с реальной StringSession (та — base64 без NUL-префикса).
+FRESH_SESSION = "\x00__fresh__"
+
+
 class ClientNotConfiguredError(RuntimeError):
     """api_id или api_hash не заданы."""
 
@@ -62,6 +67,19 @@ class TelegramClientManager:
         """
         with self._lock:
             self._session_override = session_string or None
+            self._destroy_client()
+
+    def use_fresh_session(self) -> None:
+        """
+        Форсирует БРЭНД-НОВУЮ пустую сессию (новый MTProto auth_key) для
+        следующего клиента. Нужно для перезапуска QR-входа: на старом auth_key
+        Telegram держит привязанный недоделанный 2FA-логин и сразу отвечает
+        SESSION_PASSWORD_NEEDED вместо свежего QR. use_session(None) НЕ годится —
+        _build_client фолбэчит на load_session(); нужен явный пустой сеанс.
+        НЕ logout — keyring-сессии не трогаются.
+        """
+        with self._lock:
+            self._session_override = FRESH_SESSION
             self._destroy_client()
 
     def use_proxy(self, proxy: Optional[str]) -> None:
@@ -155,8 +173,12 @@ class TelegramClientManager:
                 "api_hash не найден. Откройте настройки и введите API Hash."
             )
 
-        session_str = self._session_override or self._credentials.load_session(self._config.api_id)
-        session = StringSession(session_str) if session_str else StringSession()
+        if self._session_override == FRESH_SESSION:
+            # Чистый auth_key — без обращения к Keyring (перезапуск QR-входа).
+            session = StringSession()
+        else:
+            session_str = self._session_override or self._credentials.load_session(self._config.api_id)
+            session = StringSession(session_str) if session_str else StringSession()
 
         kwargs = self._proxy_kwargs()
         return TelegramClient(session, api_id, api_hash, **kwargs)

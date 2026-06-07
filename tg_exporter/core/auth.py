@@ -239,10 +239,11 @@ class AuthService:
         self._qr = None
         self._qr_pwd_pending = False
         try:
-            # Пересоздаём клиент: незавершённый QR-логин оставляет соединение
-            # в промежуточном состоянии. destroy() + следующий ensure_connected
-            # дадут чистого клиента.
-            self._client.destroy()
+            # НЕ просто destroy(): следующий _build_client восстановил бы ТОТ ЖЕ
+            # auth_key, к которому Telegram привязал недоделанный 2FA-логин →
+            # снова SESSION_PASSWORD_NEEDED без свежего QR. Форсируем чистый
+            # auth_key (пустую сессию). Keyring-сессии не трогаем.
+            self._client.use_fresh_session()
         except Exception:
             pass
 
