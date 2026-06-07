@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import customtkinter as ctk
 
-from ..theme import C, RADIUS, SPACING, font, font_display
+from ..theme import C, RADIUS, SPACING, WIDGET, font, font_display
 from ..components.button import AppButton
 from ..components.entry import AppEntry
 from ..components.qr_widget import QRCodeWidget
@@ -53,10 +53,10 @@ class LoginView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             self._card,
-            text="Авторизуйтесь через свой аккаунт",
+            text="Вход в аккаунт",
             font=font(13),
             text_color=C["text_sec"],
-        ).pack(pady=(0, SPACING["xl"]))
+        ).pack(pady=(0, SPACING["lg"]))
 
         # Переключатель режима входа: по номеру / QR-код
         self._mode_var = ctk.StringVar(value="По номеру")
@@ -67,32 +67,6 @@ class LoginView(ctk.CTkFrame):
             command=self._on_mode_change,
         )
         self._mode_seg.pack(pady=(0, SPACING["md"]))
-
-        # Статус API-ключей
-        self._api_lbl = ctk.CTkLabel(
-            self._card, text="", font=font(12), text_color=C["error"],
-        )
-        self._api_lbl.pack(pady=(0, SPACING["sm"]))
-
-        # Кнопки настройки API
-        self._settings_btn = AppButton(
-            self._card, text="Настроить API ключи", variant="secondary",
-            command=self._app.show_api_keys,
-        )
-        self._settings_btn.pack(padx=pad, fill="x", pady=(0, SPACING["xs"]))
-
-        self._clear_api_btn = AppButton(
-            self._card, text="Сбросить API ключи", variant="ghost",
-            command=self._on_clear_api,
-        )
-        # не показываем пока нет ключей
-
-        # Прокси для входа (для РФ-юзеров без VPN). Применяется к первому входу.
-        self._proxy_btn = AppButton(
-            self._card, text="🌐 Прокси (если нет VPN)", variant="ghost",
-            command=self._app.show_login_proxy,
-        )
-        self._proxy_btn.pack(padx=pad, fill="x", pady=(0, SPACING["sm"]))
 
         # Телефон
         self._phone_entry = AppEntry(self._card, placeholder_text="+7 900 000-00-00")
@@ -138,7 +112,42 @@ class LoginView(ctk.CTkFrame):
         self._action_btn = AppButton(
             self._card, text="Получить код", command=self._on_action,
         )
-        self._action_btn.pack(padx=pad, fill="x", pady=(0, SPACING["2xl"]))
+        self._action_btn.pack(padx=pad, fill="x", pady=(0, SPACING["lg"]))
+
+        # ---- Настройки подключения (свёрнуты по умолчанию) ----
+        # Ссылка-переключатель внизу карточки: API-ключи и прокси спрятаны под ней,
+        # чтобы главный экран был чистым (только вход).
+        self._conn_open = False
+        self._conn_toggle = ctk.CTkButton(
+            self._card, text="⚙  Настройки подключения",
+            font=font(12), fg_color="transparent", hover_color=C["card"],
+            text_color=C["text_sec"], height=WIDGET["btn_h_sm"],
+            command=self._toggle_conn_settings,
+        )
+        self._conn_toggle.pack(side="bottom", pady=(0, SPACING["md"]))
+
+        # Раскрывающийся блок настроек (скрыт; пакуется перед toggle при открытии).
+        self._conn_frame = ctk.CTkFrame(self._card, fg_color="transparent")
+        self._api_lbl = ctk.CTkLabel(
+            self._conn_frame, text="", font=font(12), text_color=C["error"],
+        )
+        self._api_lbl.pack(pady=(0, SPACING["xs"]))
+        self._settings_btn = AppButton(
+            self._conn_frame, text="Настроить API ключи", variant="secondary",
+            size="sm", command=self._app.show_api_keys,
+        )
+        self._settings_btn.pack(fill="x", pady=(0, SPACING["xs"]))
+        self._proxy_btn = AppButton(
+            self._conn_frame, text="🌐 Прокси (если нет VPN)", variant="ghost",
+            size="sm", command=self._app.show_login_proxy,
+        )
+        self._proxy_btn.pack(fill="x", pady=(0, SPACING["xs"]))
+        # «Сбросить API» — редкое действие, спрятано глубже (только тут).
+        self._clear_api_btn = AppButton(
+            self._conn_frame, text="Сбросить API ключи", variant="ghost",
+            size="sm", command=self._on_clear_api,
+        )
+        self._clear_api_btn.pack(fill="x")
 
         # ---- QR-режим (скрыт по умолчанию, не пакуется) ----
         self._qr_frame = ctk.CTkFrame(self._card, fg_color="transparent")
@@ -174,24 +183,34 @@ class LoginView(ctk.CTkFrame):
             self._mode_var.set("По номеру")
             self._on_mode_change("По номеру")
 
+    def _toggle_conn_settings(self) -> None:
+        """Раскрывает/сворачивает блок «Настройки подключения»."""
+        self._conn_open = not self._conn_open
+        if self._conn_open:
+            self._show_widget(self._conn_frame, padx=SPACING["3xl"], fill="x",
+                              pady=(0, SPACING["sm"]), before=self._conn_toggle)
+            self._conn_toggle.configure(text="⚙  Скрыть настройки подключения")
+        else:
+            self._hide_widget(self._conn_frame)
+            self._conn_toggle.configure(text="⚙  Настройки подключения")
+
     def refresh_state(self) -> None:
         """Вызывается App после изменения config / credentials."""
         has_creds = self._app.has_api_creds()
         if has_creds:
             self._api_lbl.configure(text="API ключи настроены ✓", text_color=C["success"])
             self._settings_btn.configure(text="Изменить API ключи")
-            # before=_phone_entry только если он в packing-порядке (в QR-режиме
-            # или когда login скрыт он может быть unpacked → TclError на before=).
-            pk = dict(padx=SPACING["3xl"], fill="x", pady=(0, SPACING["xl"]))
-            if self._phone_entry.winfo_ismapped():
-                pk["before"] = self._phone_entry
-            self._show_widget(self._clear_api_btn, **pk)
+            self._conn_toggle.configure(text="⚙  Настройки подключения")
             self._phone_entry.configure(state="normal")
             self._action_btn.configure(state="normal")
         else:
+            # Без API-ключей вход невозможен — подсвечиваем это в ссылке и
+            # авто-раскрываем блок, чтобы пользователь сразу их ввёл.
             self._api_lbl.configure(text="Укажите API ID и API Hash", text_color=C["error"])
             self._settings_btn.configure(text="Настроить API ключи")
-            self._hide_widget(self._clear_api_btn)
+            self._conn_toggle.configure(text="⚠  Сначала укажите API-ключи →")
+            if not self._conn_open:
+                self._toggle_conn_settings()
             self._phone_entry.configure(state="disabled")
             self._action_btn.configure(state="disabled")
         self.clear_error()
@@ -278,12 +297,14 @@ class LoginView(ctk.CTkFrame):
                 self.set_error("Сначала укажите API ID и API Hash")
                 self._mode_var.set("По номеру")
                 return
-            # Скрываем виджеты входа по номеру.
+            # Скрываем виджеты входа по номеру + блок настроек подключения.
             self._hide_widget(self._phone_entry)
             self._hide_widget(self._code_entry)
             self._hide_widget(self._pwd_frame)
             self._hide_widget(self._action_btn)
-            self._hide_widget(self._clear_api_btn)
+            self._hide_widget(self._conn_frame)
+            self._hide_widget(self._conn_toggle)
+            self._conn_open = False
             # Показываем QR-блок.
             self.clear_error()
             self._hide_widget(self._qr_refresh_btn)
@@ -311,6 +332,8 @@ class LoginView(ctk.CTkFrame):
             self._show_widget(self._action_btn, padx=SPACING["3xl"], fill="x",
                               pady=(0, SPACING["2xl"]))
             self._action_btn.set_idle_text("Получить код")
+            # Вернуть ссылку «Настройки подключения» внизу.
+            self._show_widget(self._conn_toggle, side="bottom", pady=(0, SPACING["md"]))
             self.refresh_state()
             self._card.place_configure(relheight=0.72)
 
