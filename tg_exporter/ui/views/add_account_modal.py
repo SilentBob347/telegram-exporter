@@ -191,8 +191,12 @@ class AddAccountModal(ctk.CTkToplevel):
         self._app._worker.submit(self._bg_verify_code, code, password)
 
     def _on_cancel(self) -> None:
+        # Временный клиент подключён на worker-потоке (его event loop) —
+        # disconnect ОБЯЗАТЕЛЬНО на worker, иначе из UI-потока он молча
+        # не выполнится и клиент/сокет утечёт (CLAUDE.md §10.6). Окно
+        # закрываем сразу на UI-потоке.
         self._qr_active = False
-        self._dispose_client()
+        self._app._worker.submit(self._dispose_client)
         self.destroy()
 
     # ---------------------------------------------------------- mode switch
@@ -213,9 +217,11 @@ class AddAccountModal(ctk.CTkToplevel):
             self._hide(self._qr_refresh_btn)
             self._qr_status.configure(text="Запрашиваю код…", text_color=C["text_sec"])
             self._qr_frame.pack(fill="x")
-            # Стартуем QR на новом временном клиенте (старый — отключаем).
-            self._dispose_client()
+            # Отключаем старый клиент и стартуем QR — ОБА на worker-потоке
+            # (disconnect из UI-потока молча не выполнится → утечка). Worker
+            # последовательный: dispose отработает до _bg_qr_start.
             self._qr_active = True
+            self._app._worker.submit(self._dispose_client)
             self._app._worker.submit(self._bg_qr_start)
         else:
             self._mode = "phone"
@@ -544,7 +550,9 @@ class AddAccountModal(ctk.CTkToplevel):
         return kwargs
 
     def _dispose_client(self) -> None:
-        self._qr_active = False
+        # Только отключает временный клиент. Флагом _qr_active управляют
+        # вызывающие явно (иначе при submit(dispose)+submit(start) dispose
+        # сбросил бы флаг и поллинг сразу бы вышел). Вызывать на worker-потоке.
         self._qr = None
         if self._client is not None:
             try:
