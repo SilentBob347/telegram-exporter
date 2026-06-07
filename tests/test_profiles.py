@@ -188,6 +188,119 @@ class TestProfileManager(unittest.TestCase):
         self.assertEqual(data["active_phone"], "+71111111111")
         self.assertEqual(len(data["profiles"]), 1)
 
+    # --- прокси на аккаунт ---
+
+    def test_proxy_default_empty(self):
+        p = self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.assertEqual(p.proxy, "")
+
+    def test_set_proxy(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.assertTrue(self.pm.set_proxy("+71111111111", "socks5://1.2.3.4:1080"))
+        # без кредов public == full
+        self.assertEqual(self.pm.get("+71111111111").proxy, "socks5://1.2.3.4:1080")
+
+    def test_set_proxy_unknown_returns_false(self):
+        self.assertFalse(self.pm.set_proxy("+70000000000", "socks5://1.2.3.4:1080"))
+
+    def test_set_proxy_clear(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://1.2.3.4:1080")
+        self.assertTrue(self.pm.set_proxy("+71111111111", ""))
+        self.assertEqual(self.pm.get("+71111111111").proxy, "")
+
+    def test_proxy_persisted_to_file(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://1.2.3.4:1080")
+        path = self._fake_home / "profiles.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["profiles"][0]["proxy"], "socks5://1.2.3.4:1080")
+
+    def test_proxy_persists_across_instances(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "http://1.2.3.4:8080")
+        from tg_exporter.core.profiles import ProfileManager
+        pm2 = ProfileManager(self._creds)
+        self.assertEqual(pm2.get("+71111111111").proxy, "http://1.2.3.4:8080")
+
+    # --- секрет прокси в Keyring, не в файле ---
+
+    def test_proxy_password_not_in_file(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://user:topsecret@1.2.3.4:1080")
+        path = self._fake_home / "profiles.json"
+        raw = path.read_text(encoding="utf-8")
+        self.assertNotIn("topsecret", raw)
+        # username/host остаются (несекретны) для UI-метки
+        self.assertIn("1.2.3.4", raw)
+
+    def test_mtproto_secret_not_in_file(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy(
+            "+71111111111",
+            "mtproto://1.2.3.4:443?secret=00112233445566778899aabbccddeeff",
+        )
+        raw = (self._fake_home / "profiles.json").read_text(encoding="utf-8")
+        self.assertNotIn("00112233445566778899aabbccddeeff", raw)
+
+    def test_load_proxy_returns_full_url_with_secret(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        full = "socks5://user:topsecret@1.2.3.4:1080"
+        self.pm.set_proxy("+71111111111", full)
+        p = self.pm.get("+71111111111")
+        self.assertEqual(self.pm.load_proxy(p), full)
+
+    def test_load_proxy_full_persists_across_instances(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        full = "socks5://user:topsecret@1.2.3.4:1080"
+        self.pm.set_proxy("+71111111111", full)
+        from tg_exporter.core.profiles import ProfileManager
+        pm2 = ProfileManager(self._creds)
+        self.assertEqual(pm2.load_proxy(pm2.get("+71111111111")), full)
+
+    def test_proxy_secret_in_keyring(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://user:topsecret@1.2.3.4:1080")
+        key = ("tg_exporter", "42:proxy:+71111111111")
+        self.assertIn("topsecret", self._fake_kr.store.get(key, ""))
+
+    def test_clear_proxy_removes_keyring_secret(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://user:topsecret@1.2.3.4:1080")
+        self.pm.set_proxy("+71111111111", "")
+        key = ("tg_exporter", "42:proxy:+71111111111")
+        self.assertNotIn(key, self._fake_kr.store)
+
+    def test_remove_profile_deletes_proxy_secret(self):
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://user:topsecret@1.2.3.4:1080")
+        self.pm.remove("+71111111111")
+        key = ("tg_exporter", "42:proxy:+71111111111")
+        self.assertNotIn(key, self._fake_kr.store)
+
+    def test_load_proxy_falls_back_to_public_when_no_keyring(self):
+        # Старый профиль: proxy в файле, но в Keyring секрета нет (миграция).
+        # load_proxy должен вернуть хотя бы public-строку из файла.
+        self.pm.add_or_update(phone="+71111111111", api_id="42", session_string="s")
+        self.pm.set_proxy("+71111111111", "socks5://1.2.3.4:1080")
+        # вручную стираем keyring-ключ прокси
+        self._fake_kr.store.pop(("tg_exporter", "42:proxy:+71111111111"), None)
+        p = self.pm.get("+71111111111")
+        self.assertEqual(self.pm.load_proxy(p), "socks5://1.2.3.4:1080")
+
+    def test_old_file_without_proxy_loads(self):
+        # Обратная совместимость: profiles.json от старой версии без поля proxy.
+        path = self._fake_home / "profiles.json"
+        path.write_text(json.dumps({
+            "active_phone": "+71111111111",
+            "profiles": [{"phone": "+71111111111", "display_name": "Max", "api_id": "42"}],
+        }), encoding="utf-8")
+        from tg_exporter.core.profiles import ProfileManager
+        pm2 = ProfileManager(self._creds)
+        p = pm2.get("+71111111111")
+        self.assertEqual(p.display_name, "Max")
+        self.assertEqual(p.proxy, "")  # дефолт для отсутствующего поля
+
 
 if __name__ == "__main__":
     unittest.main()

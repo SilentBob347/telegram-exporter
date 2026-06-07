@@ -23,6 +23,11 @@ tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('telethon')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# python_socks is imported by telethon lazily (try/except + async backend via
+# `from python_socks.async_.asyncio import Proxy`), so PyInstaller's static
+# analysis misses it and the proxy feature would silently break in the bundle.
+tmp_ret = collect_all('python_socks')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('faster_whisper')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ctranslate2')

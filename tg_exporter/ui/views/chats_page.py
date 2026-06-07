@@ -1,6 +1,8 @@
 """
-ChatListView — основной экран: список чатов, фильтры, поиск.
+ChatsPage — страница списка чатов: список чатов, фильтры, поиск.
 
+Глобальные кнопки шапки (Инструкция / Выход / Настройки / Аккаунт)
+вынесены в сайдбар. Здесь остаётся только список чатов и его фильтры.
 Опции экспорта вынесены в ExportModal (открывается по кнопке).
 """
 
@@ -27,12 +29,12 @@ _PERIOD_DAYS: dict[str, int] = {
 }
 
 
-class ChatListView(ctk.CTkFrame):
+class ChatsPage(ctk.CTkFrame):
     """
-    Главный экран после логина.
+    Страница со списком чатов внутри основного экрана с сайдбаром.
 
     Layout:
-        [Header]     Telegram Exporter | Обновить | Выход
+        [Header]     Чаты | Обновить
         [Toolbar]    Папка ▾  |  Период ▾  |  Экспортировать папку
         [DateRange]  (видима только при "Свой период")
         [Search]     🔍 Поиск чатов...
@@ -56,31 +58,13 @@ class ChatListView(ctk.CTkFrame):
     # ---- Build ----
 
     def _build(self) -> None:
-        # === HEADER ===
+        # === HEADER страницы (заголовок + Обновить) ===
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=SPACING["xl"], pady=(SPACING["lg"], SPACING["md"]))
-
-        ctk.CTkLabel(
-            header, text="Telegram Exporter",
-            font=font_display(22, "bold"), text_color=C["text"],
-        ).pack(side="left")
-
-        AppButton(header, text="Инструкция", variant="ghost", size="sm",
-                  command=self._app.show_help).pack(side="left", padx=(SPACING["md"], 0))
-
-        AppButton(header, text="Выход", variant="ghost", size="sm",
-                  command=self._app.logout).pack(side="right")
-        AppButton(header, text="Настройки", variant="ghost", size="sm",
-                  command=self._app.show_settings).pack(side="right", padx=(0, SPACING["sm"]))
+        header.pack(fill="x", padx=SPACING["xl"], pady=(SPACING["2xl"], SPACING["md"]))
+        ctk.CTkLabel(header, text="Чаты", font=font_display(20, "bold"),
+                     text_color=C["text"]).pack(side="left")
         AppButton(header, text="Обновить", variant="secondary", size="sm",
-                  command=self._app.load_chats).pack(side="right", padx=(0, SPACING["sm"]))
-
-        # Переключатель аккаунтов — слева от «Обновить»
-        self._account_btn = AppButton(
-            header, text="Аккаунт ▾", variant="ghost", size="sm",
-            command=self._show_account_menu,
-        )
-        self._account_btn.pack(side="right", padx=(0, SPACING["sm"]))
+                  command=self._app.load_chats).pack(side="right")
 
         # === TOOLBAR (одна строка, на всю ширину; минимальная высота) ===
         _toolbar_h = WIDGET["entry_h_sm"] + SPACING["sm"] * 2  # 30 + 8 = 38
@@ -245,7 +229,6 @@ class ChatListView(ctk.CTkFrame):
         self._status_lbl.configure(text="Обновление списка чатов...")
 
     def render_chats(self, dialogs: list) -> None:
-        self.refresh_account_switcher()
         self._dialogs = dialogs or []
         self._dialog_map = {}
         self._listbox.delete(0, tk.END)
@@ -265,63 +248,6 @@ class ChatListView(ctk.CTkFrame):
 
     def set_status(self, text: str) -> None:
         self._status_lbl.configure(text=text)
-
-    def refresh_account_switcher(self) -> None:
-        """Обновляет подпись кнопки-переключателя под активный профиль."""
-        active = self._app.active_profile()
-        if active is None:
-            label = "Аккаунт ▾"
-        else:
-            name = (active.display_name or active.phone or "").strip() or "Аккаунт"
-            if len(name) > 18:
-                name = name[:17] + "…"
-            label = f"{name} ▾"
-        try:
-            self._account_btn.set_idle_text(label)
-        except Exception:
-            pass
-
-    def _show_account_menu(self) -> None:
-        """Открывает popup-меню со списком профилей и действиями."""
-        profiles = self._app.profiles()
-        active = self._app.active_profile()
-        active_phone = active.phone if active else None
-
-        menu = tk.Menu(self, tearoff=0)
-        if profiles:
-            for p in profiles:
-                title = (p.display_name or p.phone or "").strip() or p.phone
-                prefix = "● " if p.phone == active_phone else "   "
-                menu.add_command(
-                    label=f"{prefix}{title}   {p.phone}",
-                    command=lambda phone=p.phone: self._on_switch_profile(phone),
-                )
-            menu.add_separator()
-        menu.add_command(label="+ Добавить аккаунт", command=self._app.show_add_account)
-        if active is not None:
-            menu.add_command(
-                label=f"Удалить «{active.display_name or active.phone}»",
-                command=lambda: self._on_remove_profile(active.phone),
-            )
-        try:
-            x = self._account_btn.winfo_rootx()
-            y = self._account_btn.winfo_rooty() + self._account_btn.winfo_height()
-            menu.tk_popup(x, y)
-        finally:
-            menu.grab_release()
-
-    def _on_switch_profile(self, phone: str) -> None:
-        active = self._app.active_profile()
-        if active and active.phone == phone:
-            return
-        self._app.switch_profile(phone)
-
-    def _on_remove_profile(self, phone: str) -> None:
-        import tkinter.messagebox as mb
-        if not mb.askyesno("Удалить аккаунт", f"Удалить профиль {phone} и его сессию?"):
-            return
-        self._app.remove_profile(phone)
-        self.refresh_account_switcher()
 
     def selected_dialog(self) -> Optional[object]:
         sel = self._listbox.curselection()
@@ -376,5 +302,3 @@ class ChatListView(ctk.CTkFrame):
         """Возвращает строку цвета для нативного tk.Listbox."""
         import customtkinter as ctk
         return pair[0] if ctk.get_appearance_mode() == "Light" else pair[1]
-
-

@@ -129,40 +129,34 @@ def make_anchored_popup(parent, x: int, y: int, fg_color=None) -> ctk.CTkTopleve
 
 def setup_smooth_scroll(modal, scrollable_frame) -> None:
     """
-    Адекватная скорость колеса мыши на всех ОС.
-    На macOS event.delta = ±1..±5 (мелкие тики),
-    на Win/Linux — ±120 кратно.
+    Ускоряет колесо мыши на macOS (встроенный скролл CTkScrollableFrame там
+    мелковат: использует -event.delta без множителя).
+
+    ВАЖНО: НЕ используем `bind_all`/`unbind_all` — CustomTkinter запрещает их
+    на своих виджетах (CTkBaseClass бросает AttributeError). Вместо этого
+    биндим напрямую на внутренний `_parent_canvas` (это голый tkinter.Canvas,
+    где bind разрешён). Возвращаем "break", чтобы прервать цепочку обработчиков
+    и не задвоить со встроенным `bind_all`-обработчиком CTkScrollableFrame
+    (widget-биндинг с "break" выполняется раньше тега `all` и прерывает его).
+
+    На Win/Linux ничего не делаем — встроенная скорость там уже адекватная
+    (event.delta/6), а кросс-тег "break" мог бы её сломать.
+
+    Первый аргумент `modal` сохранён для совместимости вызовов, но не нужен.
     """
+    if sys.platform != "darwin":
+        return
     try:
         canvas = scrollable_frame._parent_canvas
     except AttributeError:
         return
 
     def _scroll_fn(event):
-        if sys.platform == "darwin":
-            # macOS: event.delta = ±1..±5 (мелкие тики). Масштабируем по delta,
-            # чтобы быстрый прокрут трекпада не ощущался как медленный.
-            step = -event.delta * 3
-        else:
-            # Win/Linux: event.delta кратен 120 за тик колеса. Делим на 20
-            # → 6 строк; быстрый спин даёт пропорционально больше прокрутки.
-            step = -int(event.delta / 20)
+        # macOS: event.delta = ±1..±5 (мелкие тики). Множитель 3 даёт привычную
+        # скорость трекпада/колеса.
+        step = -event.delta * 3
         if step:
             canvas.yview_scroll(step, "units")
+        return "break"
 
-    def _on_enter(_):
-        modal.bind_all("<MouseWheel>", _scroll_fn)
-
-    def _on_leave(_):
-        modal.unbind_all("<MouseWheel>")
-
-    scrollable_frame.bind("<Enter>", _on_enter, add="+")
-    scrollable_frame.bind("<Leave>", _on_leave, add="+")
-    _bind_to_children(scrollable_frame, _on_enter, _on_leave)
-
-
-def _bind_to_children(widget, on_enter, on_leave) -> None:
-    widget.bind("<Enter>", on_enter, add="+")
-    widget.bind("<Leave>", on_leave, add="+")
-    for child in widget.winfo_children():
-        _bind_to_children(child, on_enter, on_leave)
+    canvas.bind("<MouseWheel>", _scroll_fn, add="+")

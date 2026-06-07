@@ -22,16 +22,18 @@ import customtkinter as ctk
 
 from .theme import C, WINDOW
 from .views.login_view import LoginView
-from .views.chat_list_view import ChatListView
-from .views.settings_modal import SettingsModal
+from .views.chats_page import ChatsPage
+from .views.accounts_page import AccountsPage
+from .views.settings_page import SettingsPage
+from .views.help_page import HelpPage
 from .views.export_modal import ExportModal
-from .views.help_modal import HelpModal
+from .components.sidebar import Sidebar
 
 from ..models.config import AppConfig
 from ..models.export_task import ExportTask, ExportProgress, ExportFormat, AuthorFilter
 from ..core.credentials import CredentialsManager
 from ..core.client import TelegramClientManager
-from ..core.auth import AuthService, AuthStep
+from ..core.auth import AuthService, AuthStep, QrNeedsPassword
 from ..core.orchestrator import ExportOrchestrator
 from ..core.profiles import ProfileManager, Profile
 from ..services.export_history import ExportHistory
@@ -91,6 +93,11 @@ class App(ctk.CTk):
         self._custom_date_from: Optional[datetime.datetime] = None
         self._custom_date_to: Optional[datetime.datetime] = None
         self._active_export_modal: Optional[ExportModal] = None
+        # Временный прокси для входа (до создания профиля). Применяется к клиенту
+        # на send_code и переносится в профиль после успешного логина.
+        self._pending_proxy: str = ""
+        # Активен ли цикл поллинга QR-входа (выключается при уходе с QR-режима).
+        self._qr_active: bool = False
         self._folder_active: bool = False
         self._folder_mode: str = "По чатам"   # "По чатам" | "Один .md на чат" | "Один .md на папку"
         self._folder_transcribe: bool = False
@@ -102,11 +109,35 @@ class App(ctk.CTk):
         # все чаты пакета выгружались с одинаковым диапазоном дат.
         self._folder_dates: tuple[Optional[datetime.datetime], Optional[datetime.datetime]] = (None, None)
 
-        # Views
+        # Views / Shell
         self._container = ctk.CTkFrame(self, fg_color="transparent")
         self._container.pack(fill="both", expand=True)
+
+        # LOGIN-режим: login_view на всё окно
         self.login_view = LoginView(self._container, self)
-        self.chats_view = ChatListView(self._container, self)
+
+        # SHELL-режим: sidebar + контейнер страниц
+        self._shell = ctk.CTkFrame(self._container, fg_color="transparent")
+        self.sidebar = Sidebar(self._shell, self, on_select=self._show_page)
+        self.sidebar.pack(side="left", fill="y")
+        self._page_container = ctk.CTkFrame(self._shell, fg_color="transparent")
+        self._page_container.pack(side="left", fill="both", expand=True)
+        # Все страницы — в ОДНОЙ grid-ячейке (оверлап). Переключение через
+        # tkraise() мгновенно, без pack/forget (перепаковка = видимая задержка).
+        self._page_container.grid_rowconfigure(0, weight=1)
+        self._page_container.grid_columnconfigure(0, weight=1)
+
+        self.chats_page = ChatsPage(self._page_container, self)
+        self.accounts_page = AccountsPage(self._page_container, self)
+        self.settings_page = SettingsPage(self._page_container, self)
+        self.help_page = HelpPage(self._page_container, self)
+        self._pages = {
+            "chats": self.chats_page, "accounts": self.accounts_page,
+            "settings": self.settings_page, "help": self.help_page,
+        }
+        for page in self._pages.values():
+            page.grid(row=0, column=0, sticky="nsew")
+        self._current_page = None
         self._current_view = None
 
         # Регистрация обработчиков событий
@@ -127,7 +158,13 @@ class App(ctk.CTk):
     # ---- Navigation ----
 
     def show_login(self) -> None:
-        self._switch_view(self.login_view)
+        # LOGIN-режим: прячем shell, показываем login на всё окно.
+        self._qr_active = False
+        self._shell.pack_forget()
+        self.login_view.pack(fill="both", expand=True)
+        self._current_view = self.login_view
+        # Сброс возможного залипшего QR-режима (напр. после logout из QR).
+        self.login_view.reset_to_phone_mode()
         self.login_view.refresh_state()
         if self.has_api_creds() and self._has_any_session():
             self._worker.submit(self._bg_check_session)
@@ -139,33 +176,82 @@ class App(ctk.CTk):
             return True
         return bool(self.credentials.load_session(self.config.api_id))
 
+    def _show_shell(self) -> None:
+        """SHELL-режим: login скрыт, видны sidebar + страницы."""
+        self.login_view.pack_forget()
+        self._shell.pack(fill="both", expand=True)
+        self._current_view = self._shell
+
+    def _show_page(self, name: str) -> None:
+        """Переключает активную страницу в контейнере + подсветку sidebar."""
+        page = self._pages.get(name)
+        if page is None:
+            return
+        # tkraise — мгновенно, без перепаковки (страница уже в grid-ячейке).
+        page.tkraise()
+        self._current_page = page
+        self.sidebar.set_active(name)
+        # Обновление данных — ПОСЛЕ отрисовки (after), чтобы не задерживать
+        # появление страницы (refresh перечитывает config / рисует карточки).
+        if name in ("accounts", "settings"):
+            self.after(0, page.refresh)
+
     def show_chats(self) -> None:
-        self._switch_view(self.chats_view)
+        self._show_shell()
+        self._show_page("chats")
         self.load_chats()
 
     def show_settings(self) -> None:
-        SettingsModal(self)
+        self._show_shell()
+        self._show_page("settings")
 
     def show_api_keys(self) -> None:
-        from .views.api_keys_modal import ApiKeysModal
-        ApiKeysModal(self)
+        # API-ключи теперь часть страницы настроек.
+        self._show_shell()
+        self._show_page("settings")
 
     def show_help(self) -> None:
-        HelpModal(self)
+        self._show_shell()
+        self._show_page("help")
 
     def show_add_account(self) -> None:
         from .views.add_account_modal import AddAccountModal
         AddAccountModal(self)
 
+    def show_proxy_settings(self, phone: str) -> None:
+        from .views.proxy_modal import ProxyModal
+        ProxyModal(self, phone)
+
+    def show_login_proxy(self) -> None:
+        """Прокси для входа (до создания профиля) — открывает модалку без phone."""
+        from .views.proxy_modal import ProxyModal
+        ProxyModal(self, None)
+
+    @property
+    def pending_proxy(self) -> str:
+        return self._pending_proxy
+
+    def set_pending_proxy(self, proxy_url: str) -> None:
+        """Сохраняет временный прокси входа и применяет к клиенту до логина."""
+        self._pending_proxy = proxy_url or ""
+        self._worker.submit(self._client_mgr.use_proxy, self._pending_proxy)
+
+    def test_account_proxy(self, modal, proxy_url: str) -> None:
+        """Проверяет прокси в фоне (кнопка «Тест связи» в ProxyModal)."""
+        self._worker.submit(self._bg_test_proxy, modal, proxy_url)
+
+    def apply_active_proxy(self, proxy_url: str) -> None:
+        """
+        Применяет прокси к клиенту активного профиля. use_proxy() рвёт и
+        пересоздаёт клиент (disconnect → asyncio), поэтому выполняем в worker-
+        потоке: нельзя трогать клиент из UI-потока (§10.6) и нужно сериализовать
+        с возможным активным экспортом, который идёт в том же worker.
+        """
+        self._worker.submit(self._client_mgr.use_proxy, proxy_url)
+
     def show_export_dialog(self, dialog) -> None:
         modal = ExportModal(self, dialog)
         self._active_export_modal = modal
-
-    def _switch_view(self, view) -> None:
-        if self._current_view:
-            self._current_view.pack_forget()
-        view.pack(fill="both", expand=True)
-        self._current_view = view
 
     # ---- Auth actions ----
 
@@ -177,6 +263,31 @@ class App(ctk.CTk):
 
     def logout(self) -> None:
         self._worker.submit(self._bg_logout)
+
+    # ---- QR-вход ----
+
+    def start_qr_login(self) -> None:
+        """Запускает вход по QR: фоновый цикл поллинга + событие qr_ready."""
+        self._qr_active = True
+        self._worker.submit(self._bg_qr_login)
+
+    def stop_qr_login(self) -> None:
+        """
+        Останавливает поллинг QR и СБРАСЫВАЕТ незавершённый QR-вход (в т.ч.
+        зависший на 2FA). Вызывается при переключении на вход по номеру —
+        чтобы войти другим способом/номером с чистого листа. Сессию не трогает.
+        """
+        self._qr_active = False
+        self._worker.submit(self._auth.cancel_qr)
+
+    def refresh_qr(self) -> None:
+        """Кнопка «Обновить»: пересоздаёт истёкший QR-токен и продолжает поллинг."""
+        self._qr_active = True
+        self._worker.submit(self._bg_qr_refresh)
+
+    def verify_qr_password(self, password: str) -> None:
+        """Пароль 2FA после сканирования QR."""
+        self._worker.submit(self._bg_qr_password, password)
 
     # ---- Config actions ----
 
@@ -218,9 +329,9 @@ class App(ctk.CTk):
         # медленном/завивающем get_dialogs() пользователь видит пустой
         # «Загрузка чатов...» и думает, что всё сломалось.
         if self._all_dialogs:
-            self.chats_view.show_refreshing()
+            self.chats_page.show_refreshing()
         else:
-            self.chats_view.show_loading()
+            self.chats_page.show_loading()
         self._worker.submit(self._bg_load_chats)
 
     def filter_chats(self, query: str = "") -> None:
@@ -228,7 +339,7 @@ class App(ctk.CTk):
         if query:
             q = query.lower()
             dialogs = [d for d in dialogs if q in (d.name or "").lower()]
-        self.chats_view.render_chats(dialogs)
+        self.chats_page.render_chats(dialogs)
 
     def set_current_folder(self, folder_name: str) -> None:
         self._current_folder = folder_name or "Все чаты"
@@ -399,6 +510,11 @@ class App(ctk.CTk):
                 session_string=session_str,
                 display_name=display_name, set_active=True,
             )
+            # Переносим временный прокси входа в созданный профиль, чтобы он
+            # сохранился между запусками (а не жил только в памяти сессии).
+            if self._pending_proxy:
+                self._profiles.set_proxy(phone, self._pending_proxy)
+                self._pending_proxy = ""
         except Exception as exc:
             logger.error("save_active_profile_session failed", exc=exc)
 
@@ -415,21 +531,51 @@ class App(ctk.CTk):
     # ---- Background tasks ----
 
     def _bg_check_session(self) -> None:
-        # Если есть активный профиль — грузим его сессию в клиент до проверки,
-        # иначе клиент построится с дефолтной (пустой для мульти-аккаунтных сетапов).
-        active = self._profiles.active()
-        if active:
-            session_str = self._profiles.load_session(active)
-            if session_str:
-                if active.api_id and active.api_id != self.config.api_id:
+        """
+        Автовход: восстанавливает сохранённую сессию активного профиля.
+        Устойчив к сбоям прокси — если коннект через прокси не прошёл, но
+        сессия валидна, пробует БЕЗ прокси (юзер мог включить VPN/выйти из РФ).
+        Любая ошибка не «съедается» молча — пользователь получает сообщение.
+        """
+        try:
+            active = self._profiles.active()
+            session_str = None
+            proxy_url = ""
+            if active:
+                proxy_url = self._profiles.load_proxy(active) or ""
+                session_str = self._profiles.load_session(active)
+                if session_str and active.api_id and active.api_id != self.config.api_id:
                     self.config = self.config.with_api_id(active.api_id)
                     self.config.save()
                     self._client_mgr.update_config(self.config)
+
+            # Попытка 1: с прокси профиля (если задан).
+            self._client_mgr.use_proxy(proxy_url)
+            if session_str:
                 self._client_mgr.use_session(session_str)
-        result = self._auth.check_session()
-        if result.step == AuthStep.SUCCESS:
-            self._worker.put_event("login_success", None)
-        # Иначе просто остаёмся на login
+            result = self._auth.check_session()
+            if result.step == AuthStep.SUCCESS:
+                self._worker.put_event("login_success", None)
+                return
+
+            # Попытка 2 (fallback): если был прокси и сессия валидна — пробуем
+            # без прокси (прокси мог умереть, а Telegram доступен напрямую).
+            if proxy_url and session_str:
+                self._client_mgr.use_proxy("")
+                self._client_mgr.use_session(session_str)
+                result2 = self._auth.check_session()
+                if result2.step == AuthStep.SUCCESS:
+                    self._worker.put_event("login_success", None)
+                    return
+                # Не вышло и без прокси — сообщаем, но не блокируем вход.
+                self._worker.put_event(
+                    "login_error",
+                    "Автовход не удался (прокси недоступен?). Войдите заново или проверьте прокси.",
+                )
+            # Без прокси — остаёмся на экране входа (сессия устарела/нет).
+        except Exception as exc:
+            logger.error("check_session (автовход) failed", exc=exc)
+            self._worker.put_event("login_error", "Автовход не удался. Войдите заново.")
 
     def _bg_send_code(self, phone: str) -> None:
         result = self._auth.send_code(phone)
@@ -449,7 +595,76 @@ class App(ctk.CTk):
         else:
             self._worker.put_event("login_error", result.error or "Ошибка")
 
+    def _bg_qr_login(self) -> None:
+        """Фоновый цикл QR-входа: показать QR → поллить до входа/2FA/истечения."""
+        try:
+            # Прокси для входа (как и для входа по номеру) — до создания профиля.
+            self._client_mgr.use_proxy(self._pending_proxy)
+            url = self._auth.start_qr()
+            self._worker.put_event("qr_ready", url)
+            self._qr_poll_loop()
+        except QrNeedsPassword:
+            # 2FA-аккаунт, токен уже отсканирован → сразу поле пароля, без poll.
+            self._qr_active = False
+            self._worker.put_event("qr_2fa", None)
+        except Exception as exc:
+            logger.error("qr_login failed", exc=exc)
+            self._qr_active = False
+            self._worker.put_event("qr_error", str(exc))
+
+    def _bg_qr_refresh(self) -> None:
+        """Пересоздаёт истёкший QR и продолжает поллинг."""
+        try:
+            url = self._auth.recreate_qr()
+            self._worker.put_event("qr_ready", url)
+            self._qr_poll_loop()
+        except QrNeedsPassword:
+            self._qr_active = False
+            self._worker.put_event("qr_2fa", None)
+        except Exception as exc:
+            logger.error("qr_refresh failed", exc=exc)
+            self._qr_active = False
+            self._worker.put_event("qr_error", str(exc))
+
+    def _qr_poll_loop(self) -> None:
+        """Поллит poll_qr, пока активен QR-режим. Эмитит события по результату."""
+        while self._qr_active:
+            result = self._auth.poll_qr(timeout=5)
+            # Пользователь мог уйти с QR-режима, пока мы блокировались в wait(5).
+            # Не эмитим устаревшие события (включая ложную навигацию на чаты).
+            if not self._qr_active:
+                return
+            if result.step == AuthStep.SUCCESS:
+                self._qr_active = False
+                self._worker.put_event("login_success", None)
+                return
+            if result.step == AuthStep.PASSWORD_REQUIRED:
+                self._qr_active = False
+                self._worker.put_event("qr_2fa", None)
+                return
+            if result.step == AuthStep.EXPIRED:
+                self._qr_active = False
+                self._worker.put_event("qr_expired", None)
+                return
+            if result.step == AuthStep.ERROR:
+                self._qr_active = False
+                self._worker.put_event("qr_error", result.error or "Ошибка QR-входа")
+                return
+            # WAITING → продолжаем цикл
+
+    def _bg_qr_password(self, password: str) -> None:
+        """Пароль 2FA после QR-сканирования. Неверный пароль — даём повторить."""
+        result = self._auth.verify_qr_password(password)
+        if result.step == AuthStep.SUCCESS:
+            self._worker.put_event("login_success", None)
+        elif result.step == AuthStep.PASSWORD_REQUIRED:
+            # Неверный/пустой пароль — остаёмся в 2FA, разрешаем повторить.
+            self._worker.put_event("qr_2fa_retry", "Неверный пароль 2FA. Попробуйте ещё раз.")
+        else:
+            self._worker.put_event("qr_error", result.error or "Ошибка входа")
+
     def _bg_logout(self) -> None:
+        self._qr_active = False
         self._auth.logout()
         if self.config.api_id:
             self.credentials.delete_session(self.config.api_id)
@@ -469,6 +684,7 @@ class App(ctk.CTk):
                 self.config = self.config.with_api_id(profile.api_id)
                 self.config.save()
                 self._client_mgr.update_config(self.config)
+            self._client_mgr.use_proxy(self._profiles.load_proxy(profile))
             self._client_mgr.use_session(session_str)
             client = self._client_mgr.ensure_connected()
             if not client.is_user_authorized():
@@ -478,6 +694,14 @@ class App(ctk.CTk):
         except Exception as exc:
             logger.error("switch_profile failed", exc=exc)
             self._worker.put_event("error", f"Не удалось переключиться: {exc}")
+
+    def _bg_test_proxy(self, modal, proxy_url: str) -> None:
+        """Проверка прокси через временный клиент. Не трогает активную сессию."""
+        try:
+            ok, message = self._client_mgr.test_proxy(proxy_url)
+        except Exception as exc:
+            ok, message = False, f"Ошибка проверки: {exc}"
+        self._worker.put_event("proxy_test_result", (modal, (ok, message)))
 
     def _bg_load_chats(self) -> None:
         try:
@@ -582,6 +806,11 @@ class App(ctk.CTk):
         d.on("code_sent",        lambda _: self.login_view.show_code_input())
         d.on("login_error",      lambda msg: self.login_view.set_error(msg or "Ошибка"))
         d.on("login_2fa",        lambda _: self.login_view.show_code_input())
+        d.on("qr_ready",         lambda url: self.login_view.on_qr_ready(url))
+        d.on("qr_2fa",           lambda _: self.login_view.on_qr_2fa())
+        d.on("qr_2fa_retry",     lambda msg: self.login_view.on_qr_2fa_retry(msg or "Неверный пароль 2FA"))
+        d.on("qr_expired",       lambda _: self.login_view.on_qr_expired())
+        d.on("qr_error",         lambda msg: self.login_view.on_qr_error(msg or "Ошибка QR"))
         d.on("logout_done",      lambda _: self.show_login())
         d.on("profile_switched", self._on_profile_switched)
 
@@ -589,10 +818,15 @@ class App(ctk.CTk):
         d.on("add_account_2fa",       self._on_add_account_2fa)
         d.on("add_account_done",      self._on_add_account_done)
         d.on("add_account_error",     self._on_add_account_error)
+        d.on("add_account_qr_ready",   self._on_add_account_qr_ready)
+        d.on("add_account_qr_2fa",     self._on_add_account_qr_2fa)
+        d.on("add_account_qr_expired", self._on_add_account_qr_expired)
+        d.on("add_account_qr_error",   self._on_add_account_qr_error)
+        d.on("proxy_test_result",     self._on_proxy_test_result)
 
         d.on("chats_loaded",     self._on_chats_loaded)
         d.on("chats_load_failed", self._on_chats_load_failed)
-        d.on("folders_loaded",   lambda names: self.chats_view.set_folders(names))
+        d.on("folders_loaded",   lambda names: self.chats_page.set_folders(names))
         d.on("error",            self._on_error)
         d.on("info",             self._on_info)
         d.on("worker_error",     lambda tb: logger.error(f"Worker error:\n{tb}"))
@@ -646,29 +880,66 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _on_add_account_qr_ready(self, payload) -> None:
+        modal, url = payload
+        try:
+            modal.on_qr_ready(url)
+        except Exception:
+            pass
+
+    def _on_add_account_qr_2fa(self, payload) -> None:
+        modal, data = payload
+        try:
+            # data == "wrong" → повторная попытка после неверного пароля.
+            modal.on_qr_2fa(retry=(data == "wrong"))
+        except Exception:
+            pass
+
+    def _on_add_account_qr_expired(self, payload) -> None:
+        modal, _ = payload
+        try:
+            modal.on_qr_expired()
+        except Exception:
+            pass
+
+    def _on_add_account_qr_error(self, payload) -> None:
+        modal, message = payload
+        try:
+            modal.on_qr_error(message or "Ошибка QR")
+        except Exception:
+            pass
+
+    def _on_proxy_test_result(self, payload) -> None:
+        modal, (ok, message) = payload
+        try:
+            modal.on_test_result(ok, message)
+        except Exception:
+            pass
+
     def _on_profile_switched(self, profile: Profile) -> None:
-        # Обновляем список чатов и шапку под новый аккаунт
+        # Обновляем список чатов под новый аккаунт + карточки аккаунтов
+        # (пометка «активный»), затем показываем страницу «Чаты».
         self._all_dialogs = []
         self._folder_peers = {}
         self._folder_filters = {}
         self._folder_excludes = {}
+        self.accounts_page.refresh()
         self.show_chats()
-        self.chats_view.refresh_account_switcher()
 
     def _on_chats_loaded(self, dialogs) -> None:
         self._all_dialogs = dialogs
         self.filter_chats(
-            self.chats_view._search_entry.get().strip()
-            if hasattr(self.chats_view, "_search_entry") else ""
+            self.chats_page._search_entry.get().strip()
+            if hasattr(self.chats_page, "_search_entry") else ""
         )
 
     def _on_chats_load_failed(self, _payload) -> None:
         # Возвращаем статус «Чатов: N» вместо застрявшего «Обновление...».
         # Если ничего не было загружено раньше — пусто.
         if self._all_dialogs:
-            self.chats_view.set_status(f"Чатов: {len(self._all_dialogs)}")
+            self.chats_page.set_status(f"Чатов: {len(self._all_dialogs)}")
         else:
-            self.chats_view.set_status("Не удалось загрузить чаты")
+            self.chats_page.set_status("Не удалось загрузить чаты")
 
     def _on_error(self, msg: str) -> None:
         import tkinter.messagebox as mb
@@ -742,7 +1013,7 @@ class App(ctk.CTk):
 
     def _on_folder_progress(self, payload) -> None:
         current, total, label = payload
-        self.chats_view.set_status(f"Папка: {current}/{total} — {label}")
+        self.chats_page.set_status(f"Папка: {current}/{total} — {label}")
 
     def _on_folder_done(self, total: int) -> None:
         import os, glob as _glob
@@ -775,7 +1046,7 @@ class App(ctk.CTk):
         msg = f"Папка готова: {ok} успешно"
         if err:
             msg += f", {err} ошибок"
-        self.chats_view.set_status(msg)
+        self.chats_page.set_status(msg)
 
     # ---- Polling ----
 

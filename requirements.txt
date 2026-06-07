@@ -15,7 +15,12 @@ keyring>=24.0,<26.0
 # ffmpeg for audio conversion
 imageio-ffmpeg>=0.4.9,<1.0
 
-# SOCKS proxy for telethon (optional, but build expects it)
+# Proxy support for telethon (per-account SOCKS5/HTTP/MTProto).
+# Telethon 1.36+ prefers python-socks and IGNORES the proxy (with only a
+# UserWarning) if it is absent — PySocks alone is NOT enough for socks5/http.
+# The [asyncio] extra is required because telethon connects via
+# python_socks.async_.asyncio.Proxy. PySocks kept as a legacy fallback.
+python-socks[asyncio]>=2.0,<3.0
 PySocks>=1.7,<2.0
 
 # Local Whisper transcription

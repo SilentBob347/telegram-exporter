@@ -1,5 +1,13 @@
 """
-SettingsModal — настройки приложения (транскрипция, экспорт).
+SettingsPage — страница настроек (левый сайдбар + страницы).
+
+Объединяет на одной прокручиваемой странице:
+  • API-ключи Telegram (api_id / api_hash) — раньше ApiKeysModal;
+  • настройки транскрипции (провайдер / модель / язык / Deepgram ключ) —
+    раньше SettingsModal.
+
+Это ctk.CTkFrame (НЕ CTkToplevel) с прозрачным фоном — встраивается в
+правую область главного окна.
 """
 
 from __future__ import annotations
@@ -11,7 +19,7 @@ import customtkinter as ctk
 from ..theme import C, SPACING, WIDGET, font, font_display
 from ..components.button import AppButton
 from ..components.entry import AppEntry
-from ..modal_utils import prepare_modal, show_modal, setup_smooth_scroll
+from ..modal_utils import setup_smooth_scroll
 
 if TYPE_CHECKING:
     from ..app import App
@@ -41,16 +49,14 @@ _MODEL_LABELS = {
 }
 
 
+class SettingsPage(ctk.CTkFrame):
+    """Страница «Настройки»: API-ключи + транскрипция."""
 
-class SettingsModal(ctk.CTkToplevel):
-
-    def __init__(self, app: "App") -> None:
-        super().__init__(app)
-        prepare_modal(self, app, 500, 540, "Настройки")
+    def __init__(self, master, app: "App") -> None:
+        super().__init__(master, fg_color="transparent")
         self._app = app
         self._build()
         self._load()
-        show_modal(self, app)
         self.after(100, lambda: setup_smooth_scroll(self, self._scroll))
 
     # ------------------------------------------------------------------ build
@@ -60,14 +66,77 @@ class SettingsModal(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self, text="Настройки",
-            font=font_display(18, "bold"), text_color=C["text"],
-        ).pack(pady=(pad, SPACING["lg"]))
+            font=font_display(18, "bold"), text_color=C["text"], anchor="w",
+        ).pack(fill="x", padx=pad, pady=(pad, SPACING["lg"]))
 
         self._scroll = ctk.CTkScrollableFrame(self, fg_color=C["bg"])
         self._scroll.pack(fill="both", expand=True, padx=pad)
         s = self._scroll
 
-        # ── Транскрипция ──────────────────────────────────────────────────
+        # ── Секция API ────────────────────────────────────────────────────
+        self._build_api_section(s)
+
+        # ── Разделитель ───────────────────────────────────────────────────
+        ctk.CTkFrame(s, height=1, fg_color=C["border"]).pack(
+            fill="x", pady=(SPACING["lg"], SPACING["md"]),
+        )
+
+        # ── Секция Транскрипция ───────────────────────────────────────────
+        self._build_transcription_section(s)
+
+        # ── Разделитель ───────────────────────────────────────────────────
+        ctk.CTkFrame(s, height=1, fg_color=C["border"]).pack(
+            fill="x", pady=(SPACING["lg"], SPACING["md"]),
+        )
+
+        # ── Секция Экспорт по умолчанию ───────────────────────────────────
+        self._build_export_section(s)
+
+        # ── Низ страницы: статус + Сохранить ──────────────────────────────
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=pad, pady=(SPACING["md"], pad))
+
+        self._status_lbl = ctk.CTkLabel(
+            btn_row, text="", font=font(12),
+            text_color=C["success"], anchor="w",
+        )
+        self._status_lbl.pack(side="left", fill="x", expand=True)
+
+        AppButton(
+            btn_row, text="Сохранить", variant="primary", size="md",
+            command=self._save,
+        ).pack(side="right")
+
+    def _build_api_section(self, s) -> None:
+        """API ID + API Hash (+ ссылка на my.telegram.org)."""
+        self._section(s, "API-ключи Telegram")
+
+        ctk.CTkLabel(
+            s,
+            text="Получите их на my.telegram.org → API development tools.",
+            font=font(12), text_color=C["text_sec"],
+            wraplength=420, justify="left", anchor="w",
+        ).pack(fill="x", pady=(0, SPACING["sm"]))
+
+        AppButton(
+            s, text="Открыть my.telegram.org", variant="ghost", size="sm",
+            command=lambda: webbrowser.open("https://my.telegram.org"),
+        ).pack(anchor="w", pady=(0, SPACING["md"]))
+
+        # api_id
+        self._row_label(s, "API ID")
+        self._api_id_entry = AppEntry(s, placeholder_text="например, 1234567", size="md")
+        self._api_id_entry.pack(fill="x", pady=(SPACING["xs"], SPACING["md"]))
+
+        # api_hash
+        self._row_label(s, "API Hash")
+        self._api_hash_entry = AppEntry(
+            s, placeholder_text="32 символа", show="•", size="md",
+        )
+        self._api_hash_entry.pack(fill="x", pady=(SPACING["xs"], 0))
+
+    def _build_transcription_section(self, s) -> None:
+        """Провайдер / модель Whisper / Deepgram ключ / язык."""
         self._section(s, "Транскрипция голосовых и видеокружков")
 
         self._row_label(s, "Провайдер")
@@ -120,12 +189,10 @@ class SettingsModal(ctk.CTkToplevel):
             command=self._on_lang_change,
             height=WIDGET["entry_h_sm"], font=font(13),
         )
-        self._lang_menu.pack(fill="x", pady=(SPACING["xs"], SPACING["lg"]))
+        self._lang_menu.pack(fill="x", pady=(SPACING["xs"], 0))
 
-        # ── Разделитель ───────────────────────────────────────────────────
-        ctk.CTkFrame(s, height=1, fg_color=C["border"]).pack(fill="x", pady=(0, SPACING["md"]))
-
-        # ── Экспорт ───────────────────────────────────────────────────────
+    def _build_export_section(self, s) -> None:
+        """Параметры Markdown по умолчанию (автор / временные метки)."""
         self._section(s, "Экспорт по умолчанию")
 
         self._row_label(s, "Включать автора сообщения")
@@ -141,16 +208,6 @@ class SettingsModal(ctk.CTkToplevel):
             s, text="", variable=self._include_ts_var,
             onvalue=True, offvalue=False,
         ).pack(anchor="w", pady=(SPACING["xs"], SPACING["sm"]))
-
-        # ── Кнопки ───────────────────────────────────────────────────────
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=pad, pady=(SPACING["md"], pad))
-        AppButton(btn_row, text="Отмена", variant="secondary", command=self.destroy).pack(
-            side="left", expand=True, fill="x", padx=(0, SPACING["sm"]),
-        )
-        AppButton(btn_row, text="Сохранить", variant="primary", command=self._save).pack(
-            side="left", expand=True, fill="x",
-        )
 
     # ------------------------------------------------------------------ helpers
 
@@ -187,8 +244,21 @@ class SettingsModal(ctk.CTkToplevel):
     # ------------------------------------------------------------------ load/save
 
     def _load(self) -> None:
+        """Заполняет поля текущими значениями из config + Keyring."""
         cfg = self._app.config
 
+        # API-ключи
+        if cfg.api_id:
+            self._api_id_entry.set_text(cfg.api_id)
+        else:
+            self._api_id_entry.clear()
+        api_hash = self._app.credentials.load_api_hash(cfg.api_id) if cfg.api_id else ""
+        if api_hash:
+            self._api_hash_entry.set_text(api_hash)
+        else:
+            self._api_hash_entry.clear()
+
+        # Транскрипция
         provider = cfg.transcription_provider
         self._provider_var.set(provider)
         self._provider_menu.set(_PROVIDER_LABELS.get(provider, _PROVIDER_LABELS["local"]))
@@ -201,6 +271,7 @@ class SettingsModal(ctk.CTkToplevel):
                 self._deepgram_entry.set_text(dg_key)
         else:
             self._deepgram_block.pack_forget()
+            self._model_block.pack(fill="x", in_=self._provider_options)
 
         model = cfg.local_whisper_model
         self._model_var.set(model)
@@ -210,14 +281,30 @@ class SettingsModal(ctk.CTkToplevel):
         self._lang_var.set(lang)
         self._lang_menu.set(_LANG_LABELS.get(lang, _LANG_LABELS["multi"]))
 
+        # Экспорт по умолчанию (Markdown)
         md_cfg = cfg.markdown
         self._include_author_var.set(getattr(md_cfg, "include_author", True))
         self._include_ts_var.set(getattr(md_cfg, "include_timestamps", True))
 
     def _save(self) -> None:
         import dataclasses
-        cfg = self._app.config
 
+        # ── API-ключи ─────────────────────────────────────────────────────
+        api_id = self._api_id_entry.get().strip()
+        api_hash = self._api_hash_entry.get().strip()
+        if not api_id or not api_id.isdigit():
+            self._status_lbl.configure(text="API ID должен быть числом.", text_color=C["error"])
+            return
+        if not api_hash or len(api_hash) < 10:
+            self._status_lbl.configure(text="API Hash выглядит некорректно.", text_color=C["error"])
+            return
+        try:
+            self._app.save_config(api_id, api_hash)
+        except Exception as exc:
+            self._status_lbl.configure(text=f"Ошибка сохранения: {exc}", text_color=C["error"])
+            return
+
+        # ── Транскрипция ──────────────────────────────────────────────────
         provider = self._provider_var.get()
         self._app.set_transcription_provider(provider)
         self._app.set_local_whisper_model(self._model_var.get())
@@ -228,6 +315,7 @@ class SettingsModal(ctk.CTkToplevel):
                 self._app.credentials.save_deepgram_key(dg_key)
 
         lang = self._lang_var.get()
+        cfg = self._app.config
         md_cfg = dataclasses.replace(
             cfg.markdown,
             include_author=self._include_author_var.get(),
@@ -236,4 +324,11 @@ class SettingsModal(ctk.CTkToplevel):
         new_cfg = dataclasses.replace(cfg, transcription_language=lang, markdown=md_cfg)
         self._app.config = new_cfg
         new_cfg.save()
-        self.destroy()
+
+        self._status_lbl.configure(text="Сохранено ✓", text_color=C["success"])
+
+    # ------------------------------------------------------------------ public
+
+    def refresh(self) -> None:
+        """Перечитать актуальные значения (вызывается при показе страницы)."""
+        self._load()

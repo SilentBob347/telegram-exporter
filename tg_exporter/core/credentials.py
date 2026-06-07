@@ -24,6 +24,31 @@ except ImportError:
 _SERVICE_NAME = "tg_exporter"
 
 
+def keyring_set_with_retry(service: str, key: str, value: str, attempts: int = 3) -> None:
+    """
+    Запись в Keyring с retry + read-back проверкой.
+
+    macOS Keychain периодически бросает (-25244 Unknown Error). Его backend
+    делает set = delete + add, поэтому сбой на add может СТЕРЕТЬ значение
+    (удалил старое, не записал новое). Read-back подтверждает, что значение
+    реально легло, прежде чем считать его сохранённым. Бросает последнее
+    исключение, если все попытки провалились.
+    """
+    import time
+    import keyring as _kr  # локальный импорт: уважает подмену sys.modules в тестах
+    last_exc = None
+    for i in range(attempts):
+        try:
+            _kr.set_password(service, key, value)
+            if _kr.get_password(service, key) == value:
+                return
+            last_exc = RuntimeError("keyring set verification mismatch")
+        except Exception as exc:  # incl. keyring.errors.PasswordSetError (-25244)
+            last_exc = exc
+        time.sleep(0.15 * (i + 1))
+    raise last_exc if last_exc else RuntimeError("keyring set failed")
+
+
 class KeyringUnavailableError(RuntimeError):
     """Keyring не установлен или недоступен в текущей среде."""
 
@@ -82,7 +107,7 @@ class CredentialsManager:
     def save_api_hash(self, api_id: str, api_hash: str) -> None:
         """Сохраняет api_hash в Keyring. Кидает KeyringUnavailableError если недоступен."""
         self._require_keyring()
-        keyring.set_password(_SERVICE_NAME, self._api_hash_key(api_id), api_hash)
+        keyring_set_with_retry(_SERVICE_NAME, self._api_hash_key(api_id), api_hash)
 
     def load_api_hash(self, api_id: str) -> Optional[str]:
         """Загружает api_hash из Keyring. Возвращает None если не найден."""
@@ -107,7 +132,7 @@ class CredentialsManager:
     def save_session(self, api_id: str, session_str: str) -> None:
         """Сохраняет session string в Keyring."""
         self._require_keyring()
-        keyring.set_password(_SERVICE_NAME, self._session_key(api_id), session_str)
+        keyring_set_with_retry(_SERVICE_NAME, self._session_key(api_id), session_str)
 
     def load_session(self, api_id: str) -> Optional[str]:
         """Загружает session string из Keyring. Возвращает None если не найден."""
