@@ -181,7 +181,13 @@ class TelegramClientManager:
             session = StringSession(session_str) if session_str else StringSession()
 
         kwargs = self._proxy_kwargs()
-        return TelegramClient(session, api_id, api_hash, **kwargs)
+        # Ограничиваем коннект: мёртвый/медленный прокси не должен вешать
+        # worker-поток на минуты (telethon по умолчанию connection_retries=5).
+        return TelegramClient(
+            session, api_id, api_hash,
+            timeout=10, connection_retries=1, retry_delay=0,
+            **kwargs,
+        )
 
     def test_proxy(self, proxy: str) -> tuple[bool, str]:
         """

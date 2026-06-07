@@ -23,7 +23,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-from .credentials import CredentialsManager
+from .credentials import CredentialsManager, keyring_set_with_retry
 from ..utils.logger import logger
 
 
@@ -147,8 +147,7 @@ class ProfileManager:
             raise ValueError("api_id required")
         if session_string:
             self._credentials._require_keyring()  # type: ignore[attr-defined]
-            import keyring
-            keyring.set_password("tg_exporter", _session_key(api_id, phone), session_string)
+            keyring_set_with_retry("tg_exporter", _session_key(api_id, phone), session_string)
         with self._lock:
             existing = next((p for p in self._profiles if p.phone == phone), None)
             if existing is not None:
@@ -260,8 +259,7 @@ class ProfileManager:
         if not api_id or not phone or not full_url:
             return
         try:
-            import keyring
-            keyring.set_password("tg_exporter", _proxy_key(api_id, phone), full_url)
+            keyring_set_with_retry("tg_exporter", _proxy_key(api_id, phone), full_url)
         except Exception as exc:
             logger.error(f"profiles: save proxy failed: {exc}")
 
@@ -291,8 +289,7 @@ class ProfileManager:
         if not session_string or not profile.api_id or not profile.phone:
             return
         try:
-            import keyring
-            keyring.set_password("tg_exporter", _session_key(profile.api_id, profile.phone), session_string)
+            keyring_set_with_retry("tg_exporter", _session_key(profile.api_id, profile.phone), session_string)
         except Exception as exc:
             logger.error(f"profiles: save_session failed: {exc}")
 

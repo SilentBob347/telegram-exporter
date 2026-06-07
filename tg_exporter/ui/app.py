@@ -525,25 +525,51 @@ class App(ctk.CTk):
     # ---- Background tasks ----
 
     def _bg_check_session(self) -> None:
-        # Если есть активный профиль — грузим его сессию в клиент до проверки,
-        # иначе клиент построится с дефолтной (пустой для мульти-аккаунтных сетапов).
-        active = self._profiles.active()
-        if active:
-            # Прокси профиля применяем всегда (даже если сессии ещё нет) —
-            # автовход у РФ-юзеров может идти только через прокси. Берём полную
-            # строку (с секретом) из Keyring через load_proxy.
-            self._client_mgr.use_proxy(self._profiles.load_proxy(active))
-            session_str = self._profiles.load_session(active)
-            if session_str:
-                if active.api_id and active.api_id != self.config.api_id:
+        """
+        Автовход: восстанавливает сохранённую сессию активного профиля.
+        Устойчив к сбоям прокси — если коннект через прокси не прошёл, но
+        сессия валидна, пробует БЕЗ прокси (юзер мог включить VPN/выйти из РФ).
+        Любая ошибка не «съедается» молча — пользователь получает сообщение.
+        """
+        try:
+            active = self._profiles.active()
+            session_str = None
+            proxy_url = ""
+            if active:
+                proxy_url = self._profiles.load_proxy(active) or ""
+                session_str = self._profiles.load_session(active)
+                if session_str and active.api_id and active.api_id != self.config.api_id:
                     self.config = self.config.with_api_id(active.api_id)
                     self.config.save()
                     self._client_mgr.update_config(self.config)
+
+            # Попытка 1: с прокси профиля (если задан).
+            self._client_mgr.use_proxy(proxy_url)
+            if session_str:
                 self._client_mgr.use_session(session_str)
-        result = self._auth.check_session()
-        if result.step == AuthStep.SUCCESS:
-            self._worker.put_event("login_success", None)
-        # Иначе просто остаёмся на login
+            result = self._auth.check_session()
+            if result.step == AuthStep.SUCCESS:
+                self._worker.put_event("login_success", None)
+                return
+
+            # Попытка 2 (fallback): если был прокси и сессия валидна — пробуем
+            # без прокси (прокси мог умереть, а Telegram доступен напрямую).
+            if proxy_url and session_str:
+                self._client_mgr.use_proxy("")
+                self._client_mgr.use_session(session_str)
+                result2 = self._auth.check_session()
+                if result2.step == AuthStep.SUCCESS:
+                    self._worker.put_event("login_success", None)
+                    return
+                # Не вышло и без прокси — сообщаем, но не блокируем вход.
+                self._worker.put_event(
+                    "login_error",
+                    "Автовход не удался (прокси недоступен?). Войдите заново или проверьте прокси.",
+                )
+            # Без прокси — остаёмся на экране входа (сессия устарела/нет).
+        except Exception as exc:
+            logger.error("check_session (автовход) failed", exc=exc)
+            self._worker.put_event("login_error", "Автовход не удался. Войдите заново.")
 
     def _bg_send_code(self, phone: str) -> None:
         result = self._auth.send_code(phone)
