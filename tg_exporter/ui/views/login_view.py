@@ -173,63 +173,77 @@ class LoginView(ctk.CTkFrame):
         )
 
     def _build_conn_tab(self, pad: int) -> None:
-        """Вкладка «Подключение»: inline-форма API-ключей + прокси + сброс."""
+        """
+        Вкладка «Подключение»: две секции-карточки — API-ключи и прокси.
+        Всё выровнено по левому краю, сброс ключей — внутри секции API.
+        """
         t = self._conn_tab
+        ip = SPACING["lg"]  # внутренний отступ секций
 
-        ctk.CTkLabel(
-            t,
-            text="Получите их на my.telegram.org → API development tools.",
-            font=font(12), text_color=C["text_sec"],
-            wraplength=320, justify="left",
-        ).pack(padx=pad, pady=(0, SPACING["sm"]))
+        # ── Секция «API-ключи» ────────────────────────────────────────────
+        api_sec = ctk.CTkFrame(t, fg_color=C["surface"], corner_radius=RADIUS["lg"],
+                               border_width=1, border_color=C["border"])
+        api_sec.pack(padx=pad, fill="x", pady=(0, SPACING["md"]))
 
-        AppButton(
-            t, text="Открыть my.telegram.org", variant="ghost", size="sm",
-            command=lambda: webbrowser.open("https://my.telegram.org"),
-        ).pack(padx=pad, anchor="w", pady=(0, SPACING["md"]))
+        head = ctk.CTkFrame(api_sec, fg_color="transparent")
+        head.pack(fill="x", padx=ip, pady=(ip, SPACING["sm"]))
+        ctk.CTkLabel(head, text="🔑  API-ключи Telegram", font=font(13, "bold"),
+                     text_color=C["text"], anchor="w").pack(side="left")
+        # Бейдж статуса (обновляется в refresh_state).
+        self._api_lbl = ctk.CTkLabel(head, text="", font=font(11),
+                                     text_color=C["success"], anchor="e")
+        self._api_lbl.pack(side="right")
 
-        # api_id
-        ctk.CTkLabel(
-            t, text="API ID", font=font(12), text_color=C["text_sec"], anchor="w",
-        ).pack(padx=pad, fill="x")
-        self._api_id_entry = AppEntry(t, placeholder_text="например, 1234567", size="md")
-        self._api_id_entry.pack(padx=pad, fill="x", pady=(SPACING["xs"], SPACING["md"]))
-
-        # api_hash (маскированный)
-        ctk.CTkLabel(
-            t, text="API Hash", font=font(12), text_color=C["text_sec"], anchor="w",
-        ).pack(padx=pad, fill="x")
-        self._api_hash_entry = AppEntry(
-            t, placeholder_text="32 символа", show="•", size="md",
+        link = ctk.CTkLabel(
+            api_sec, text="Получите на my.telegram.org → API development tools",
+            font=font(11), text_color=C["primary"], anchor="w", cursor="hand2",
+            wraplength=300, justify="left",
         )
-        self._api_hash_entry.pack(padx=pad, fill="x", pady=(SPACING["xs"], SPACING["sm"]))
+        link.pack(fill="x", padx=ip, pady=(0, SPACING["md"]))
+        link.bind("<Button-1>", lambda _e: webbrowser.open("https://my.telegram.org"))
 
-        # Статус сохранения / подсказка (бывший _api_lbl)
-        self._api_lbl = ctk.CTkLabel(
-            t, text="", font=font(12), text_color=C["text_sec"], wraplength=320,
-        )
-        self._api_lbl.pack(padx=pad, pady=(0, SPACING["sm"]))
+        ctk.CTkLabel(api_sec, text="API ID", font=font(11), text_color=C["text_sec"],
+                     anchor="w").pack(fill="x", padx=ip)
+        self._api_id_entry = AppEntry(api_sec, placeholder_text="например, 1234567", size="md")
+        self._api_id_entry.pack(fill="x", padx=ip, pady=(SPACING["xs"], SPACING["sm"]))
 
-        # Сохранить (inline — БЕЗ навигации в shell)
-        self._save_api_btn = AppButton(
-            t, text="Сохранить", variant="primary", size="md",
-            command=self._save_api,
-        )
-        self._save_api_btn.pack(padx=pad, fill="x", pady=(0, SPACING["md"]))
+        ctk.CTkLabel(api_sec, text="API Hash", font=font(11), text_color=C["text_sec"],
+                     anchor="w").pack(fill="x", padx=ip)
+        self._api_hash_entry = AppEntry(api_sec, placeholder_text="32 символа",
+                                        show="•", size="md")
+        self._api_hash_entry.pack(fill="x", padx=ip, pady=(SPACING["xs"], SPACING["md"]))
 
-        # Прокси (для входа без VPN)
-        self._proxy_btn = AppButton(
-            t, text="🌐 Прокси (если нет VPN)", variant="ghost", size="sm",
-            command=self._app.show_login_proxy,
-        )
-        self._proxy_btn.pack(padx=pad, fill="x", pady=(0, SPACING["xs"]))
+        self._save_api_btn = AppButton(api_sec, text="Сохранить", variant="primary",
+                                       size="md", command=self._save_api)
+        self._save_api_btn.pack(fill="x", padx=ip, pady=(0, SPACING["xs"]))
 
-        # «Сбросить API» — редкое действие, ghost-кнопкой внизу.
-        self._clear_api_btn = AppButton(
-            t, text="Сбросить API ключи", variant="ghost", size="sm",
-            command=self._on_clear_api,
-        )
-        self._clear_api_btn.pack(padx=pad, fill="x", pady=(0, SPACING["sm"]))
+        # Статус сохранения / ошибки валидации (полная строка под кнопкой).
+        self._save_status = ctk.CTkLabel(api_sec, text="", font=font(11),
+                                         text_color=C["text_sec"], anchor="w",
+                                         wraplength=300, justify="left")
+        self._save_status.pack(fill="x", padx=ip, pady=(0, SPACING["sm"]))
+
+        # Сброс — внутри секции API (логически относится к ключам).
+        self._clear_api_btn = AppButton(api_sec, text="Сбросить ключи",
+                                        variant="ghost", size="sm",
+                                        command=self._on_clear_api)
+        self._clear_api_btn.pack(anchor="w", padx=ip, pady=(0, ip))
+
+        # ── Секция «Прокси» ───────────────────────────────────────────────
+        proxy_sec = ctk.CTkFrame(t, fg_color=C["surface"], corner_radius=RADIUS["lg"],
+                                 border_width=1, border_color=C["border"])
+        proxy_sec.pack(padx=pad, fill="x")
+        prow = ctk.CTkFrame(proxy_sec, fg_color="transparent")
+        prow.pack(fill="x", padx=ip, pady=ip)
+        desc = ctk.CTkFrame(prow, fg_color="transparent")
+        desc.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(desc, text="🌐  Прокси", font=font(13, "bold"),
+                     text_color=C["text"], anchor="w").pack(fill="x")
+        ctk.CTkLabel(desc, text="Вход без VPN (SOCKS5 / MTProto)", font=font(11),
+                     text_color=C["text_sec"], anchor="w").pack(fill="x")
+        self._proxy_btn = AppButton(prow, text="Настроить", variant="secondary",
+                                    size="sm", command=self._app.show_login_proxy)
+        self._proxy_btn.pack(side="right")
 
     # ---- Tabs ----
 
@@ -283,7 +297,8 @@ class LoginView(ctk.CTkFrame):
         # сравнение value == _TAB_CONN, и вкладка «Подключение» не открывалась бы).
         # Статус «ключи заданы» показываем через _api_lbl на самой вкладке.
         if has_creds:
-            self._api_lbl.configure(text="API ключи настроены ✓", text_color=C["success"])
+            # Короткий бейдж справа от заголовка секции «API-ключи».
+            self._api_lbl.configure(text="✓ настроены", text_color=C["success"])
             self._phone_entry.configure(state="normal")
             self._action_btn.configure(state="normal")
             # По умолчанию — вкладка «Вход».
@@ -291,7 +306,7 @@ class LoginView(ctk.CTkFrame):
                 self._switch_tab(_TAB_LOGIN)
         else:
             # Без ключей вход невозможен — открываем вкладку «Подключение».
-            self._api_lbl.configure(text="Укажите API ID и API Hash", text_color=C["error"])
+            self._api_lbl.configure(text="не заданы", text_color=C["error"])
             self._phone_entry.configure(state="disabled")
             self._action_btn.configure(state="disabled")
             self._switch_tab(_TAB_CONN)
@@ -445,20 +460,19 @@ class LoginView(ctk.CTkFrame):
         api_id = self._api_id_entry.get().strip()
         api_hash = self._api_hash_entry.get().strip()
         if not api_id or not api_id.isdigit():
-            self._api_lbl.configure(text="API ID должен быть числом.", text_color=C["error"])
+            self._save_status.configure(text="API ID должен быть числом.", text_color=C["error"])
             return
         if not api_hash or len(api_hash) < 10:
-            self._api_lbl.configure(text="API Hash выглядит некорректно.", text_color=C["error"])
+            self._save_status.configure(text="API Hash выглядит некорректно.", text_color=C["error"])
             return
         try:
             # save_config сам вызывает refresh_state() в конце (переключит на «Вход»).
             self._app.save_config(api_id, api_hash)
         except Exception as exc:
-            self._api_lbl.configure(text=f"Ошибка сохранения: {exc}", text_color=C["error"])
+            self._save_status.configure(text=f"Ошибка сохранения: {exc}", text_color=C["error"])
             return
-        # refresh_state уже переключил на вкладку «Вход» и проставил статус ✓;
-        # дополнительно подтверждаем сохранение.
-        self._api_lbl.configure(text="Сохранено ✓", text_color=C["success"])
+        # refresh_state уже переключил на вкладку «Вход» и проставил бейдж ✓.
+        self._save_status.configure(text="Сохранено ✓", text_color=C["success"])
 
     def _toggle_pwd_visibility(self) -> None:
         self._pwd_visible = not self._pwd_visible
